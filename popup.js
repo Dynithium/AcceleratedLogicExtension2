@@ -320,6 +320,130 @@ const setupEventListeners = () => {
   });
 };
 
+// Native browser-based Flate decompression of PDF stream object contents
+const decompressFlateStream = async (compressedBytes) => {
+  try {
+    const ds = new DecompressionStream('deflate');
+    const writer = ds.writable.getWriter();
+    writer.write(compressedBytes);
+    writer.close();
+    
+    const response = new Response(ds.readable);
+    const buffer = await response.arrayBuffer();
+    return new Uint8Array(buffer);
+  } catch (err) {
+    console.error('PDF Stream decompression failed:', err);
+    return null;
+  }
+};
+
+// Pure client-side PDF text extraction using native DecompressionStream (Chrome 100+)
+const extractTextFromPdf = async (arrayBuffer) => {
+  try {
+    const bytes = new Uint8Array(arrayBuffer);
+    
+    // Chunked base64 binary conversion to avoid stack overflow
+    let binary = "";
+    const len = bytes.length;
+    const chunkSize = 10000;
+    for (let i = 0; i < len; i += chunkSize) {
+      const sub = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode.apply(null, sub);
+    }
+
+    let extractedText = "";
+
+    // Helper to extract plain text string inside parentheses (e.g., (text))
+    const parseDecompressedText = (decompressedBytes) => {
+      let content = "";
+      const len = decompressedBytes.length;
+      let currentString = "";
+      let inParen = false;
+      let parenDepth = 0;
+
+      for (let i = 0; i < len; i++) {
+        const char = String.fromCharCode(decompressedBytes[i]);
+        if (char === '(') {
+          if (!inParen) {
+            inParen = true;
+            parenDepth = 1;
+            currentString = "";
+          } else {
+            parenDepth++;
+            currentString += char;
+          }
+        } else if (char === ')') {
+          if (inParen) {
+            parenDepth--;
+            if (parenDepth === 0) {
+              inParen = false;
+              // Clean up octal values or escape slashes
+              let cleanStr = currentString.replace(/\\([0-7]{3})/g, (m, octal) => {
+                return String.fromCharCode(parseInt(octal, 8));
+              });
+              cleanStr = cleanStr.replace(/\\(.)/g, "$1");
+              content += cleanStr + " ";
+            } else {
+              currentString += char;
+            }
+          }
+        } else if (inParen) {
+          currentString += char;
+        }
+      }
+      return content;
+    };
+
+    let lastIndex = 0;
+    // Iterate through all pdf objects to locate stream segments
+    while (true) {
+      const streamIdx = binary.indexOf("stream", lastIndex);
+      if (streamIdx === -1) break;
+      
+      const endstreamIdx = binary.indexOf("endstream", streamIdx);
+      if (endstreamIdx === -1) break;
+
+      const dictStartIdx = binary.lastIndexOf("<<", streamIdx);
+      if (dictStartIdx !== -1 && dictStartIdx < streamIdx) {
+        const dict = binary.substring(dictStartIdx, streamIdx);
+        if (dict.includes("/FlateDecode")) {
+          let startOffset = 6;
+          if (binary.charCodeAt(streamIdx + 6) === 13 && binary.charCodeAt(streamIdx + 7) === 10) {
+            startOffset = 8;
+          } else if (binary.charCodeAt(streamIdx + 6) === 10) {
+            startOffset = 7;
+          }
+
+          const compressedBytes = bytes.subarray(streamIdx + startOffset, endstreamIdx);
+          if (compressedBytes.length > 0) {
+            const decompressed = await decompressFlateStream(compressedBytes);
+            if (decompressed) {
+              const text = parseDecompressedText(decompressed);
+              if (text.trim().length > 0) {
+                extractedText += text + "\n";
+              }
+            }
+          }
+        }
+      }
+      lastIndex = endstreamIdx + 9;
+    }
+
+    let cleanLines = extractedText.split('\n').map(line => {
+      return line.replace(/\s+/g, ' ').trim();
+    }).filter(line => {
+      if (line.length < 3) return false;
+      const printable = line.replace(/[^a-zA-Z0-9\s.,;:!?@_()-]/g, '');
+      return (printable.length / line.length) > 0.4;
+    });
+
+    return cleanLines.join('\n').trim();
+  } catch (err) {
+    console.error("Failed to parse PDF binary content:", err);
+    return "";
+  }
+};
+
 // Process newly added image and PDF files (converts to Base64 data urls)
 const handleFileSelect = (files) => {
   if (!files || files.length === 0) return;
@@ -329,39 +453,71 @@ const handleFileSelect = (files) => {
     const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
     if (!isImage && !isPdf) return;
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      let base64Url = e.target.result;
-      
-      // Ensure PDF data URI has correct MIME header
-      if (isPdf && !base64Url.startsWith('data:application/pdf')) {
-        const parts = base64Url.split(',');
-        if (parts.length > 1) {
-          base64Url = 'data:application/pdf;base64,' + parts[1];
-        }
-      }
+    if (isPdf) {
+      // For PDFs, we read the array buffer to extract text first
+      const bufferReader = new FileReader();
+      bufferReader.onload = async (ev) => {
+        const arrayBuffer = ev.target.result;
+        const extractedText = await extractTextFromPdf(arrayBuffer);
+        
+        // Then we read the data URL for UI display / fallback sending
+        const urlReader = new FileReader();
+        urlReader.onload = (e) => {
+          let base64Url = e.target.result;
+          if (!base64Url.startsWith('data:application/pdf')) {
+            const parts = base64Url.split(',');
+            if (parts.length > 1) {
+              base64Url = 'data:application/pdf;base64,' + parts[1];
+            }
+          }
 
-      // Store structured object
-      const attachmentObj = {
-        url: base64Url,
-        name: file.name,
-        type: isPdf ? 'application/pdf' : file.type,
-        size: file.size
+          const attachmentObj = {
+            url: base64Url,
+            name: file.name,
+            type: 'application/pdf',
+            size: file.size,
+            extractedText: extractedText
+          };
+
+          const exists = activeAttachments.some(att => {
+            const existingUrl = typeof att === 'string' ? att : att.url;
+            return existingUrl === base64Url;
+          });
+
+          if (!exists) {
+            activeAttachments.push(attachmentObj);
+            renderAttachmentPreviews();
+            updateSendButtonState();
+          }
+        };
+        urlReader.readAsDataURL(file);
       };
+      bufferReader.readAsArrayBuffer(file);
+    } else {
+      // Normal flow for image files
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const base64Url = e.target.result;
+        const attachmentObj = {
+          url: base64Url,
+          name: file.name,
+          type: file.type,
+          size: file.size
+        };
 
-      // Prevent duplicates
-      const exists = activeAttachments.some(att => {
-        const existingUrl = typeof att === 'string' ? att : att.url;
-        return existingUrl === base64Url;
-      });
+        const exists = activeAttachments.some(att => {
+          const existingUrl = typeof att === 'string' ? att : att.url;
+          return existingUrl === base64Url;
+        });
 
-      if (!exists) {
-        activeAttachments.push(attachmentObj);
-        renderAttachmentPreviews();
-        updateSendButtonState();
-      }
-    };
-    reader.readAsDataURL(file);
+        if (!exists) {
+          activeAttachments.push(attachmentObj);
+          renderAttachmentPreviews();
+          updateSendButtonState();
+        }
+      };
+      reader.readAsDataURL(file);
+    }
   });
 };
 
@@ -963,6 +1119,7 @@ const buildPayloadMessages = (chat) => {
 
         if (isPdf) {
           const base64Part = url.split(';base64,')[1] || '';
+          const extractedText = typeof att === 'object' && att.extractedText ? att.extractedText : '';
           
           // Anthropic / OpenRouter standard document structure
           contentArray.push({
@@ -980,7 +1137,11 @@ const buildPayloadMessages = (chat) => {
             file_url: { url: url }
           });
 
-          extraTextPrompt += `\n[Attached PDF Document: ${name}]`;
+          if (extractedText) {
+            extraTextPrompt += `\n\n[Content of PDF Document "${name}":]\n${extractedText}\n[End of PDF Document content]\n`;
+          } else {
+            extraTextPrompt += `\n[Attached PDF Document: ${name}]`;
+          }
         } else {
           contentArray.push({
             type: 'image_url',
