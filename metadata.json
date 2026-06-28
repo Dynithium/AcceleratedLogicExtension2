@@ -1,0 +1,6 @@
+{
+  "name": "AI Chat Browser Extension",
+  "description": "An unpackable AI Chat browser extension featuring multiple chats, context-aware message history, and custom OpenAI configuration (Base URL, API Key, and Model ID) with a built-in Chrome/Firefox extension frame simulator.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "OmniChat AI - Personal AI Companion",
+  "version": "1.0.0",
+  "description": "A context-aware AI chat client supporting customizable OpenAI-compatible API endpoints, custom model IDs, and local message storage.",
+  "permissions": [
+    "storage"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "OmniChat AI"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
