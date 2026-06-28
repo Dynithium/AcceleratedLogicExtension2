@@ -3,147 +3,82 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { 
-  Puzzle, 
-  Monitor, 
-  Smartphone, 
-  ExternalLink, 
-  Code,
-  Sparkles,
-  Layers,
-  Flame,
-  Download
-} from 'lucide-react';
-import ExtensionSimulator from './components/ExtensionSimulator';
-import DiagnosticsPanel from './components/DiagnosticsPanel';
+import React from 'react';
+import { Puzzle, Download } from 'lucide-react';
 
 export default function App() {
-  const [previewMode, setPreviewMode] = useState<'simulator' | 'standalone'>('simulator');
-
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans selection:bg-amber-500/30 select-none">
+    <div className="min-h-screen h-screen bg-zinc-950 text-zinc-100 flex flex-row overflow-hidden font-sans selection:bg-amber-500/30">
       
-      {/* GLOBAL SANDBOX NAVIGATION HEADER */}
-      <header className="border-b border-zinc-900 bg-zinc-950/80 backdrop-blur-md px-6 py-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 sticky top-0 z-50">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <div className="h-6 w-6 rounded-lg bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center font-bold text-zinc-950 text-xs shadow-md">
-              O
-            </div>
-            <h1 className="text-base font-bold tracking-tight text-white flex items-center gap-1.5">
-              OmniChat AI <span className="text-[10px] bg-amber-500/15 border border-amber-500/25 text-amber-400 px-1.5 py-0.5 rounded-full font-semibold uppercase tracking-wider">Browser Extension Developer Portal</span>
-            </h1>
-          </div>
-          <p className="text-xs text-zinc-400 max-w-xl">
-            A secure, context-aware extension popover applet supporting customizable OpenAI-compatible models, local-sync storage, and infinite chat histories.
-          </p>
-        </div>
-
-        {/* Action controllers */}
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Extension Zip Download Reminder */}
-          <div className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-[11px] text-zinc-400">
-            <Download size={12} className="text-amber-400" />
-            <span>Click Settings ➔ <b>Export to ZIP</b> in AI Studio to load locally!</span>
-          </div>
-        </div>
-      </header>
-
-      {/* CORE LAYOUT */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      {/* MAIN MAINPAGE AREA: Ultra-minimalist showcase representing the browser tab */}
+      <div className="flex-1 flex flex-col justify-between p-8 relative overflow-hidden bg-[radial-gradient(ellipse_at_top_left,rgba(245,158,11,0.03),transparent_50%)] select-none">
         
-        {/* LEFT COLUMN: ACTIVE EXTENSION RENDERER AND SIMULATORS (7 COLS) */}
-        <section className="lg:col-span-7 flex flex-col space-y-4 w-full">
-          {/* VIEW CONTROLS BANNER */}
-          <div className="flex items-center justify-between bg-zinc-900/60 border border-zinc-800 p-3 rounded-xl select-none shrink-0">
-            <div className="flex items-center gap-2">
-              <Layers size={14} className="text-amber-400" />
-              <span className="text-xs font-semibold text-zinc-300">Active Canvas Preview Mode:</span>
-            </div>
+        {/* Subtle top branding */}
+        <div className="flex items-center justify-between opacity-40">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs tracking-widest text-zinc-500 uppercase">OMNICHAT EXTENSION ENVIRONMENT</span>
+          </div>
+          <div className="flex items-center gap-4 text-xs font-mono">
+            <span>MANIFEST V3</span>
+            <span>CHROME SIDE PANEL ACTIVE</span>
+          </div>
+        </div>
 
-            <div className="flex items-center bg-zinc-950 p-1 rounded-lg border border-zinc-850">
-              <button
-                onClick={() => setPreviewMode('simulator')}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
-                  previewMode === 'simulator'
-                    ? 'bg-zinc-850 text-white shadow-inner'
-                    : 'text-zinc-500 hover:text-zinc-300'
-                }`}
-                id="preview_mode_simulator"
-              >
-                <Monitor size={12} />
-                <span>Chrome Simulator</span>
-              </button>
-              
-              <button
-                onClick={() => setPreviewMode('standalone')}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
-                  previewMode === 'standalone'
-                    ? 'bg-zinc-850 text-white shadow-inner'
-                    : 'text-zinc-500 hover:text-zinc-300'
-                }`}
-                id="preview_mode_standalone"
-              >
-                <Smartphone size={12} />
-                <span>Isolated Sidebar UI</span>
-              </button>
+        {/* The beautiful "omni" text centering the page */}
+        <div className="my-auto flex flex-col items-center justify-center text-center space-y-4">
+          <h1 className="text-8xl sm:text-9xl font-extrabold tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-zinc-200 via-zinc-400 to-zinc-600 drop-shadow-[0_10px_50px_rgba(255,255,255,0.03)] select-all leading-none">
+            omni
+          </h1>
+          <p className="text-xs text-zinc-500 font-mono tracking-wide max-w-sm leading-relaxed">
+            personal context-aware browser companion sidepanel.
+          </p>
+          
+          {/* Helpful local installation instruction capsule */}
+          <div className="pt-8 flex flex-col items-center gap-3">
+            <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-zinc-900/60 border border-zinc-800 text-xs text-zinc-300 shadow-xl backdrop-blur">
+              <Download size={14} className="text-amber-500" />
+              <span>Click <b>Export to ZIP</b> in settings to load locally in your browser!</span>
+            </div>
+            <div className="text-[10px] text-zinc-600 font-mono flex gap-4">
+              <span>1. Unzip folder</span>
+              <span>2. Go to chrome://extensions</span>
+              <span>3. Load Unpacked</span>
             </div>
           </div>
+        </div>
 
-          {/* SIMULATOR OR RAW PREVIEW CANVAS */}
-          <div 
-            className="w-full flex items-center justify-center bg-gradient-to-b from-zinc-900/40 to-zinc-950 rounded-2xl border border-zinc-850 overflow-hidden relative"
-            style={{ 
-              height: '640px',
-              minHeight: '640px'
-            }}
-            id="preview_canvas_container"
-          >
-            {previewMode === 'simulator' ? (
-              <div className="w-full h-full p-4 flex items-center justify-center">
-                <ExtensionSimulator />
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center space-y-3 w-full max-w-sm px-4">
-                <div className="w-full rounded-xl overflow-hidden border border-zinc-800 shadow-2xl relative bg-zinc-950 flex flex-col h-[540px]">
-                  {/* Sidebar simulated header */}
-                  <div className="h-8 bg-zinc-900 border-b border-zinc-950 px-3 flex items-center justify-between text-[10px] text-zinc-400 font-medium shrink-0 select-none">
-                    <span className="flex items-center gap-1.5 font-bold tracking-tight text-zinc-300">
-                      <Puzzle size={11} className="text-amber-400" />
-                      Side panel: OmniChat AI
-                    </span>
-                    <div className="h-3.5 w-3.5 flex items-center justify-center rounded text-zinc-500">
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </div>
-                  </div>
-                  <iframe 
-                    src="/popup.html" 
-                    className="flex-1 w-full border-none bg-zinc-950" 
-                    title="OmniChat Extension Standalone" 
-                  />
-                </div>
-                <div className="text-[10px] text-zinc-600 font-mono tracking-wider text-center">
-                  BOUNDS: RESPONSIVE SIDEBAR WIDTH (SIMULATED SIDE PANEL)
-                </div>
-              </div>
-            )}
+        {/* Simple bottom reference */}
+        <div className="flex items-center justify-between text-[10px] text-zinc-600 font-mono">
+          <span>OMNICHAT COMPANION</span>
+          <span>COMPLIANT BUILD DIRECTORY: /dist</span>
+        </div>
+      </div>
+
+      {/* PERSISTENT FULL-HEIGHT SIDE PANEL ON THE RIGHT */}
+      <aside className="w-[340px] sm:w-[360px] md:w-[380px] h-full bg-zinc-950 border-l border-zinc-900 flex flex-col shrink-0 relative shadow-[-10px_0_30px_rgba(0,0,0,0.5)] z-20">
+        
+        {/* Real Chrome-styled Side Panel Top bar */}
+        <div className="h-11 bg-zinc-900 border-b border-zinc-950 px-4 flex items-center justify-between text-xs text-zinc-400 font-medium shrink-0 select-none">
+          <span className="flex items-center gap-2 font-bold tracking-tight text-zinc-300">
+            <Puzzle size={13} className="text-amber-500 animate-pulse" />
+            Side panel: OmniChat AI
+          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9px] bg-amber-500/10 border border-amber-500/20 text-amber-500 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
+              Active
+            </span>
           </div>
-        </section>
+        </div>
 
-        {/* RIGHT COLUMN: INTEGRATION MANUAL & DIAGNOSTIC LOGS (5 COLS) */}
-        <section className="lg:col-span-5 flex flex-col space-y-6 w-full h-full select-text">
-          <DiagnosticsPanel />
-        </section>
-
-      </main>
-
-      {/* FOOTER METRICS */}
-      <footer className="border-t border-zinc-900 bg-zinc-950 py-4 px-6 text-center text-[10px] text-zinc-600 select-none">
-        <p>© 2026 OmniChat AI. Built as an unpackable Chromium Manifest V3 compliant extension boilerplate.</p>
-      </footer>
+        {/* Embedded Extension HTML Core View */}
+        <div className="flex-1 w-full bg-zinc-950 overflow-hidden">
+          <iframe 
+            src="/popup.html" 
+            className="w-full h-full border-none bg-zinc-950" 
+            title="OmniChat Extension Simulated Sidepanel" 
+          />
+        </div>
+      </aside>
 
     </div>
   );
