@@ -134,7 +134,7 @@ export default function ExtensionSimulator() {
                 ? 'text-amber-400 bg-amber-500/10 scale-105 border border-amber-500/20' 
                 : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
             }`}
-            title="OmniChat AI Assistant Popup"
+            title="OmniChat AI Assistant Sidebar"
             id="simulator_extension_badge"
           >
             {/* Custom extension icon graphic */}
@@ -161,11 +161,11 @@ export default function ExtensionSimulator() {
         </div>
       </div>
 
-      {/* BROWSER VIEW AREA & OVERLAID EXTENSION POPUP */}
-      <div className="flex-1 relative bg-zinc-950 overflow-hidden flex flex-col items-center justify-center select-text">
+      {/* BROWSER VIEW AREA & SIDEBAR */}
+      <div className="flex-1 relative bg-zinc-950 overflow-hidden flex flex-row select-text">
         
         {/* WEBPAGE BACKDROP MOCKUP */}
-        <div className="absolute inset-0 p-6 flex flex-col overflow-y-auto space-y-6 select-none opacity-40 pointer-events-none filter blur-[1px]">
+        <div className="flex-1 p-6 flex flex-col overflow-y-auto space-y-6 select-none opacity-40 pointer-events-none filter blur-[1px]">
           {currentTab === 'Hacker News' ? (
             /* MOCK HACKER NEWS SITE */
             <div className="max-w-2xl w-full mx-auto space-y-4">
@@ -239,28 +239,46 @@ export default function ExtensionSimulator() {
           )}
         </div>
 
-        {/* CLICK-TO-OPEN TIP (ONLY IF POPUP IS CLOSED) */}
+        {/* CLICK-TO-OPEN TIP (ONLY IF SIDE PANEL IS CLOSED) */}
         {!isOpen && (
-          <div className="flex flex-col items-center gap-2 cursor-pointer text-center max-w-[280px]" onClick={() => setIsOpen(true)}>
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 cursor-pointer text-center max-w-[280px] mx-auto" onClick={() => setIsOpen(true)}>
             <div className="h-12 w-12 rounded-full bg-amber-500/10 flex items-center justify-center animate-bounce">
               <Puzzle className="text-amber-400" size={24} />
             </div>
             <p className="text-xs font-semibold text-zinc-300">The Extension is Installed!</p>
             <p className="text-[10px] text-zinc-500 leading-relaxed">
-              Click the <strong className="text-amber-400">OmniChat (O) icon</strong> in the simulated browser toolbar above to open the AI chat panel.
+              Click the <strong className="text-amber-400">OmniChat (O) icon</strong> in the simulated browser toolbar above to open the side panel.
             </p>
           </div>
         )}
 
-        {/* FLOATING ACTION EXTENSION POPUP IN PLACE */}
+        {/* INTEGRATED CHROME SIDE PANEL */}
         {isOpen && (
           <div 
-            className="absolute right-6 top-1 border border-zinc-800 rounded-lg shadow-2xl overflow-hidden animate-in fade-in slide-in-from-top-4 duration-200 z-10"
-            id="simulator_popup_wrapper"
+            className="w-[300px] sm:w-[320px] md:w-[350px] h-full border-l border-zinc-900 bg-zinc-950 flex flex-col shrink-0 animate-in slide-in-from-right duration-200 z-10"
+            id="simulator_sidebar_wrapper"
           >
+            {/* Side Panel Header bar */}
+            <div className="h-8 bg-zinc-900 border-b border-zinc-950 px-3 flex items-center justify-between text-[10px] text-zinc-400 font-medium shrink-0 select-none">
+              <span className="flex items-center gap-1.5 font-bold tracking-tight text-zinc-300">
+                <Puzzle size={11} className="text-amber-400" />
+                Side panel: OmniChat AI
+              </span>
+              <button 
+                onClick={() => setIsOpen(false)}
+                className="hover:text-white p-1 rounded hover:bg-zinc-800 transition-colors cursor-pointer"
+                title="Close side panel"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            {/* Responsive Extension content inside panel iframe */}
             <iframe 
               src="/popup.html" 
-              className="w-[380px] h-[580px] border-none bg-zinc-950" 
+              className="flex-1 w-full border-none bg-zinc-950" 
               title="OmniChat Extension Simulated"
             />
           </div>

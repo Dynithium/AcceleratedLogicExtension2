@@ -4,10 +4,20 @@
   "version": "1.0.0",
   "description": "A context-aware AI chat client supporting customizable OpenAI-compatible API endpoints, custom model IDs, and local message storage.",
   "permissions": [
-    "storage"
+    "storage",
+    "sidePanel"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "popup.html"
+  },
+  "sidebar_action": {
+    "default_panel": "popup.html",
+    "default_title": "OmniChat AI"
+  },
   "action": {
-    "default_popup": "popup.html",
     "default_title": "OmniChat AI"
   },
   "icons": {

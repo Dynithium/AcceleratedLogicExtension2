@@ -35,7 +35,7 @@ export default function DiagnosticsPanel() {
       setChats(c);
     };
 
-    // Poll every 1.5 seconds to reflect settings changes from the popup in real-time
+    // Poll every 1.5 seconds to reflect settings changes from the side panel in real-time
     const interval = setInterval(checkState, 1500);
     checkState();
     return () => clearInterval(interval);
@@ -47,10 +47,20 @@ export default function DiagnosticsPanel() {
   "version": "1.0.0",
   "description": "A context-aware AI chat client supporting customizable OpenAI-compatible API endpoints, custom model IDs, and local message storage.",
   "permissions": [
-    "storage"
+    "storage",
+    "sidePanel"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "popup.html"
+  },
+  "sidebar_action": {
+    "default_panel": "popup.html",
+    "default_title": "OmniChat AI"
+  },
   "action": {
-    "default_popup": "index.html",
     "default_title": "OmniChat AI"
   },
   "icons": {
@@ -99,7 +109,7 @@ export default function DiagnosticsPanel() {
                 <CheckCircle2 size={14} className="text-emerald-400 shrink-0 mt-0.5" />
                 <div>
                   <p className="font-medium text-zinc-200">Vite Asset Router</p>
-                  <p className="text-[10px] text-zinc-500">Compiles styles into static resources mapped correctly for popup views.</p>
+                  <p className="text-[10px] text-zinc-500">Compiles styles into static resources mapped correctly for sidebar views.</p>
                 </div>
               </div>
             </div>
@@ -206,7 +216,7 @@ export default function DiagnosticsPanel() {
                   Click **Load unpacked** in the top left and select the compiled <code className="bg-zinc-900 px-1 py-0.5 rounded font-mono text-zinc-200 text-[10px]">dist</code> folder.
                 </li>
                 <li>
-                  🎉 The extension icon is now in your Chrome toolbar! Click it to start chatting!
+                  🎉 Click the extension icon in your Chrome toolbar or choose "OmniChat AI" from the side panel menu to open the chat sidebar!
                 </li>
               </ol>
             </div>
@@ -234,7 +244,7 @@ export default function DiagnosticsPanel() {
                   Navigate to your compiled <code className="bg-zinc-900 px-1 py-0.5 rounded font-mono text-zinc-200 text-[10px]">dist</code> directory and select the **manifest.json** file.
                 </li>
                 <li>
-                  🎉 The OmniChat companion is now loaded as a temporary Firefox extension!
+                  🎉 The OmniChat companion is now loaded! Click the extension icon or open the Firefox Sidebar menu to access your sidebar chat companion.
                 </li>
               </ol>
             </div>

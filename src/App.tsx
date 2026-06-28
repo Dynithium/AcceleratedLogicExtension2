@@ -86,7 +86,7 @@ export default function App() {
                 id="preview_mode_standalone"
               >
                 <Smartphone size={12} />
-                <span>Isolated Popup UI</span>
+                <span>Isolated Sidebar UI</span>
               </button>
             </div>
           </div>
@@ -105,17 +105,28 @@ export default function App() {
                 <ExtensionSimulator />
               </div>
             ) : (
-              <div className="flex flex-col items-center justify-center space-y-3">
-                <div className="rounded-xl overflow-hidden border border-zinc-800 shadow-2xl relative">
-                  {/* Decorative guide bounding box */}
+              <div className="flex flex-col items-center justify-center space-y-3 w-full max-w-sm px-4">
+                <div className="w-full rounded-xl overflow-hidden border border-zinc-800 shadow-2xl relative bg-zinc-950 flex flex-col h-[540px]">
+                  {/* Sidebar simulated header */}
+                  <div className="h-8 bg-zinc-900 border-b border-zinc-950 px-3 flex items-center justify-between text-[10px] text-zinc-400 font-medium shrink-0 select-none">
+                    <span className="flex items-center gap-1.5 font-bold tracking-tight text-zinc-300">
+                      <Puzzle size={11} className="text-amber-400" />
+                      Side panel: OmniChat AI
+                    </span>
+                    <div className="h-3.5 w-3.5 flex items-center justify-center rounded text-zinc-500">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </div>
+                  </div>
                   <iframe 
                     src="/popup.html" 
-                    className="w-[380px] h-[580px] border-none bg-zinc-950" 
+                    className="flex-1 w-full border-none bg-zinc-950" 
                     title="OmniChat Extension Standalone" 
                   />
                 </div>
-                <div className="text-[10px] text-zinc-600 font-mono tracking-wider">
-                  BOUNDS: 380px × 580px (CHROME DEFAULT POPUP)
+                <div className="text-[10px] text-zinc-600 font-mono tracking-wider text-center">
+                  BOUNDS: RESPONSIVE SIDEBAR WIDTH (SIMULATED SIDE PANEL)
                 </div>
               </div>
             )}

@@ -9,7 +9,7 @@ const copyExtensionFiles = () => {
   return {
     name: 'copy-extension-files',
     closeBundle() {
-      const files = ['manifest.json', 'popup.html', 'popup.js', 'icon16.png', 'icon48.png', 'icon128.png'];
+      const files = ['manifest.json', 'popup.html', 'popup.js', 'background.js', 'icon16.png', 'icon48.png', 'icon128.png'];
       const distDir = path.resolve(__dirname, 'dist');
       if (!fs.existsSync(distDir)) {
         fs.mkdirSync(distDir, { recursive: true });
