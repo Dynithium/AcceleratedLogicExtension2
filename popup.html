@@ -664,6 +664,21 @@
       background-color: #fbbf24;
     }
 
+    #send-btn.generating {
+      background-color: #ef4444;
+      color: #ffffff;
+      animation: buttonPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+
+    #send-btn.generating:hover {
+      background-color: #f87171;
+    }
+
+    @keyframes buttonPulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .6; }
+    }
+
     .input-hints {
       display: flex;
       justify-content: space-between;
@@ -1035,8 +1050,6 @@
       100% { transform: rotate(360deg); }
     }
   </style>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
-  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
 </head>
 <body>
 
@@ -1115,7 +1128,7 @@
             <!-- Paperclip Icon -->
             <svg class="icon" viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
           </button>
-          <input type="file" id="file-input" accept="image/*" multiple class="hidden">
+          <input type="file" id="file-input" accept="image/*,application/pdf" multiple class="hidden">
 
           <textarea id="message-input" rows="1" placeholder="Type a message... (Enter)"></textarea>
           <button id="send-btn" type="submit" title="Send Message">
@@ -1125,7 +1138,7 @@
         </div>
 
         <div class="input-hints">
-          <span>Shift+Enter for newline • Drag & drop images</span>
+          <span>Shift+Enter for newline • Drag & drop images/PDFs</span>
           <span id="auth-status-hint" style="color: var(--primary);">Loading...</span>
         </div>
       </form>

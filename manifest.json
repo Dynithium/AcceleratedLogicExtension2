@@ -13,10 +13,6 @@
   "side_panel": {
     "default_path": "popup.html"
   },
-  "sidebar_action": {
-    "default_panel": "popup.html",
-    "default_title": "OmniChat AI"
-  },
   "action": {
     "default_title": "OmniChat AI"
   },

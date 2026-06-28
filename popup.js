@@ -26,6 +26,7 @@ let activeChatId = null;
 let isSending = false;
 let editingChatId = null;
 let activeAttachments = []; // Array of Base64 strings with data URI prefix
+let activeAbortController = null; // To support stop/pause generation function
 
 // Is Extension Context Checker
 const isExtensionContext = () => {
@@ -134,6 +135,7 @@ const init = async () => {
   renderChatsList();
   renderActiveChat();
   setupEventListeners();
+  updateSendButtonState();
 };
 
 // Update Hint & Warning Indicator based on credentials
@@ -215,6 +217,17 @@ const setupEventListeners = () => {
   elements.settingsForm.addEventListener('submit', handleSaveSettings);
   elements.inputForm.addEventListener('submit', handleSendMessage);
 
+  // Stop/Pause generation on button click
+  elements.sendBtn.addEventListener('click', (e) => {
+    if (isSending) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (activeAbortController) {
+        activeAbortController.abort();
+      }
+    }
+  });
+
   // Attachment button and input triggers
   elements.attachBtn.addEventListener('click', () => elements.fileInput.click());
   elements.fileInput.addEventListener('change', (e) => {
@@ -261,9 +274,9 @@ const setupEventListeners = () => {
   elements.inputForm.addEventListener('drop', (e) => {
     const files = e.dataTransfer?.files;
     if (files && files.length > 0) {
-      const imgFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
-      if (imgFiles.length > 0) {
-        handleFileSelect(imgFiles);
+      const validFiles = Array.from(files).filter(f => f.type.startsWith('image/') || f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+      if (validFiles.length > 0) {
+        handleFileSelect(validFiles);
       }
     }
   });
@@ -282,22 +295,68 @@ const setupEventListeners = () => {
     this.style.height = (this.scrollHeight) + 'px';
     updateSendButtonState();
   });
+
+  // Non-inline event delegation for code copying (satisfies strict CSP)
+  elements.messagesScreen.addEventListener('click', (e) => {
+    const copyBtn = e.target.closest('.code-block-copy');
+    if (!copyBtn) return;
+
+    const blockId = copyBtn.getAttribute('data-block-id');
+    if (!blockId) return;
+
+    const preElement = document.getElementById(`pre-${blockId}`);
+    if (!preElement) return;
+
+    navigator.clipboard.writeText(preElement.innerText).then(() => {
+      const originalHtml = copyBtn.innerHTML;
+      copyBtn.innerHTML = `
+        <svg class="icon" style="color: var(--success); width: 10px; height: 10px;" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <span style="color: var(--success);">Copied!</span>
+      `;
+      setTimeout(() => {
+        copyBtn.innerHTML = originalHtml;
+      }, 1500);
+    });
+  });
 };
 
-// Process newly added image files (converts to Base64 data urls)
+// Process newly added image and PDF files (converts to Base64 data urls)
 const handleFileSelect = (files) => {
   if (!files || files.length === 0) return;
 
   Array.from(files).forEach(file => {
-    if (!file.type.startsWith('image/')) return;
+    const isImage = file.type.startsWith('image/');
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    if (!isImage && !isPdf) return;
 
     const reader = new FileReader();
     reader.onload = (e) => {
-      const base64Url = e.target.result;
+      let base64Url = e.target.result;
       
+      // Ensure PDF data URI has correct MIME header
+      if (isPdf && !base64Url.startsWith('data:application/pdf')) {
+        const parts = base64Url.split(',');
+        if (parts.length > 1) {
+          base64Url = 'data:application/pdf;base64,' + parts[1];
+        }
+      }
+
+      // Store structured object
+      const attachmentObj = {
+        url: base64Url,
+        name: file.name,
+        type: isPdf ? 'application/pdf' : file.type,
+        size: file.size
+      };
+
       // Prevent duplicates
-      if (!activeAttachments.includes(base64Url)) {
-        activeAttachments.push(base64Url);
+      const exists = activeAttachments.some(att => {
+        const existingUrl = typeof att === 'string' ? att : att.url;
+        return existingUrl === base64Url;
+      });
+
+      if (!exists) {
+        activeAttachments.push(attachmentObj);
         renderAttachmentPreviews();
         updateSendButtonState();
       }
@@ -318,19 +377,60 @@ const renderAttachmentPreviews = () => {
 
   container.classList.remove('hidden');
 
-  activeAttachments.forEach((b64, index) => {
+  activeAttachments.forEach((att, index) => {
+    const url = typeof att === 'string' ? att : att.url;
+    const name = typeof att === 'string' ? 'Attachment' : att.name;
+    const type = typeof att === 'string' ? (url.startsWith('data:application/pdf') ? 'application/pdf' : 'image/') : att.type;
+    const isPdf = type.startsWith('application/pdf') || url.startsWith('data:application/pdf');
+
     const div = document.createElement('div');
     div.className = 'attachment-preview';
 
-    const img = document.createElement('img');
-    img.src = b64;
-    img.alt = 'Attachment thumbnail';
+    if (isPdf) {
+      // Style as beautiful PDF document preview card
+      div.className += ' pdf-preview';
+      div.style.backgroundColor = 'rgba(239, 68, 68, 0.1)';
+      div.style.border = '1px dashed rgba(239, 68, 68, 0.4)';
+      div.style.display = 'flex';
+      div.style.flexDirection = 'column';
+      div.style.alignItems = 'center';
+      div.style.justifyContent = 'center';
+      div.style.padding = '2px';
+      div.title = name;
+
+      // Icon
+      const pdfIcon = document.createElement('div');
+      pdfIcon.style.display = 'flex';
+      pdfIcon.style.alignItems = 'center';
+      pdfIcon.style.justifyContent = 'center';
+      pdfIcon.innerHTML = `
+        <svg class="icon" style="color: #ef4444; width: 18px; height: 18px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+          <polyline points="14 2 14 8 20 8"></polyline>
+        </svg>
+      `;
+      div.appendChild(pdfIcon);
+
+      // Name label
+      const label = document.createElement('span');
+      label.innerText = 'PDF';
+      label.style.fontSize = '8px';
+      label.style.fontWeight = 'bold';
+      label.style.color = '#ef4444';
+      label.style.marginTop = '-2px';
+      div.appendChild(label);
+    } else {
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = 'Attachment thumbnail';
+      div.appendChild(img);
+    }
 
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
     removeBtn.className = 'attachment-remove-btn';
     removeBtn.innerText = '×';
-    removeBtn.title = 'Remove image';
+    removeBtn.title = 'Remove';
     removeBtn.onclick = (e) => {
       e.stopPropagation();
       activeAttachments.splice(index, 1);
@@ -338,7 +438,6 @@ const renderAttachmentPreviews = () => {
       updateSendButtonState();
     };
 
-    div.appendChild(img);
     div.appendChild(removeBtn);
     container.appendChild(div);
   });
@@ -346,13 +445,33 @@ const renderAttachmentPreviews = () => {
 
 // Syncs send button highlighted state
 const updateSendButtonState = () => {
-  const hasText = elements.messageInput.value.trim().length > 0;
-  const hasFiles = activeAttachments.length > 0;
-
-  if (hasText || hasFiles) {
+  if (isSending) {
     elements.sendBtn.classList.add('active');
+    elements.sendBtn.classList.add('generating');
+    elements.sendBtn.title = "Stop generating";
+    elements.sendBtn.innerHTML = `
+      <!-- Pause Icon -->
+      <svg class="icon" style="width: 10px; height: 10px;" viewBox="0 0 24 24" fill="currentColor">
+        <rect x="5" y="4" width="4" height="16" rx="1"></rect>
+        <rect x="15" y="4" width="4" height="16" rx="1"></rect>
+      </svg>
+    `;
   } else {
-    elements.sendBtn.classList.remove('active');
+    elements.sendBtn.classList.remove('generating');
+    elements.sendBtn.title = "Send Message";
+    elements.sendBtn.innerHTML = `
+      <!-- Send Icon -->
+      <svg class="icon" style="width: 11px; height: 11px;" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+    `;
+
+    const hasText = elements.messageInput.value.trim().length > 0;
+    const hasFiles = activeAttachments.length > 0;
+
+    if (hasText || hasFiles) {
+      elements.sendBtn.classList.add('active');
+    } else {
+      elements.sendBtn.classList.remove('active');
+    }
   }
 };
 
@@ -651,13 +770,35 @@ const renderActiveChat = () => {
       if (isUser) {
         let contentHtml = escapeHtml(msg.content || '');
         if (msg.attachments && msg.attachments.length > 0) {
-          contentHtml += `<div class="msg-bubble-attachments" style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;">`;
-          msg.attachments.forEach(url => {
-            contentHtml += `<img src="${url}" style="max-width: 140px; max-height: 140px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); display: block;" />`;
+          contentHtml += `<div class="msg-bubble-attachments" style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px;">`;
+          msg.attachments.forEach(att => {
+            const url = typeof att === 'string' ? att : att.url;
+            const name = typeof att === 'string' ? 'Attachment' : att.name;
+            const isPdf = url.startsWith('data:application/pdf') || url.includes('pdf');
+
+            if (isPdf) {
+              contentHtml += `
+                <a href="${url}" download="${name}" class="pdf-attachment-link" style="display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; background-color: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 6px; color: var(--text-main); text-decoration: none; max-width: 220px; transition: background-color 0.2s;" title="Click to download ${escapeHtml(name)}">
+                  <svg class="icon" style="color: #ef4444; width: 18px; height: 18px; flex-shrink: 0;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                    <polyline points="10 9 9 9 8 9"></polyline>
+                  </svg>
+                  <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; display: flex; flex-direction: column; text-align: left;">
+                    <span style="font-weight: 500; color: var(--text-main); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(name)}</span>
+                    <span style="font-size: 8px; color: var(--text-muted);">PDF Document • Click to download</span>
+                  </div>
+                </a>
+              `;
+            } else {
+              contentHtml += `<img src="${url}" style="max-width: 140px; max-height: 140px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); display: block;" />`;
+            }
           });
           contentHtml += `</div>`;
         }
-        bubble.innerHTML = contentHtml || '<span style="font-style: italic; color: var(--text-muted);">Sent an image</span>';
+        bubble.innerHTML = contentHtml || '<span style="font-style: italic; color: var(--text-muted);">Sent attachment</span>';
       } else {
         bubble.className += ' formatted-text';
         bubble.innerHTML = extractThinkingAndFormat(msg.content || '', msg.id);
@@ -745,6 +886,8 @@ const handleSendMessage = async (e) => {
   elements.sendBtn.classList.remove('active');
   
   isSending = true;
+  activeAbortController = new AbortController();
+  updateSendButtonState();
   renderChatsList();
   renderActiveChat();
 
@@ -765,18 +908,33 @@ const handleSendMessage = async (e) => {
     chat.updatedAt = Date.now();
     await setStorageItem(STORAGE_KEYS.CHATS, chats);
   } catch (error) {
-    console.error('API Error:', error);
-    const errorMsg = {
-      id: 'msg_' + (Date.now() + 1),
-      role: 'assistant',
-      content: `❌ **API Connection Error:** ${error.message || 'An unexpected error occurred.'}\n\nPlease check your credentials in settings.`,
-      timestamp: Date.now(),
-      model: 'Error Diagnostics',
-    };
-    chat.messages.push(errorMsg);
+    if (error.name === 'AbortError') {
+      const stoppedMsg = {
+        id: 'msg_' + (Date.now() + 1),
+        role: 'assistant',
+        content: `⏹️ **Generation stopped.**`,
+        timestamp: Date.now(),
+        model: settings.modelId,
+      };
+      chat.messages.push(stoppedMsg);
+      chat.updatedAt = Date.now();
+      await setStorageItem(STORAGE_KEYS.CHATS, chats);
+    } else {
+      console.error('API Error:', error);
+      const errorMsg = {
+        id: 'msg_' + (Date.now() + 1),
+        role: 'assistant',
+        content: `❌ **API Connection Error:** ${error.message || 'An unexpected error occurred.'}\n\nPlease check your credentials in settings.`,
+        timestamp: Date.now(),
+        model: 'Error Diagnostics',
+      };
+      chat.messages.push(errorMsg);
+    }
   } finally {
     isSending = false;
+    activeAbortController = null;
     renderActiveChat();
+    updateSendButtonState();
   }
 };
 
@@ -795,13 +953,48 @@ const buildPayloadMessages = (chat) => {
   // 2. Add message context history
   chat.messages.forEach(m => {
     if (m.role === 'user' && m.attachments && m.attachments.length > 0) {
-      const contentArray = [{ type: 'text', text: m.content || '' }];
-      m.attachments.forEach(b64 => {
-        contentArray.push({
-          type: 'image_url',
-          image_url: { url: b64 }
-        });
+      let extraTextPrompt = '';
+      const contentArray = [];
+      
+      m.attachments.forEach(att => {
+        const url = typeof att === 'string' ? att : att.url;
+        const name = typeof att === 'string' ? 'document.pdf' : att.name;
+        const isPdf = url.startsWith('data:application/pdf') || url.includes('pdf');
+
+        if (isPdf) {
+          const base64Part = url.split(';base64,')[1] || '';
+          
+          // Anthropic / OpenRouter standard document structure
+          contentArray.push({
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: base64Part
+            }
+          });
+
+          // Standard file_url for endpoints that map file urls
+          contentArray.push({
+            type: 'file_url',
+            file_url: { url: url }
+          });
+
+          extraTextPrompt += `\n[Attached PDF Document: ${name}]`;
+        } else {
+          contentArray.push({
+            type: 'image_url',
+            image_url: { url: url }
+          });
+        }
       });
+
+      // Add the final text block with fallback markers
+      contentArray.unshift({
+        type: 'text',
+        text: (m.content || '') + extraTextPrompt
+      });
+
       payload.push({
         role: m.role,
         content: contentArray
@@ -833,6 +1026,7 @@ const sendChatApiRequest = async (chat) => {
   const response = await fetch(url, {
     method: 'POST',
     headers,
+    signal: activeAbortController ? activeAbortController.signal : undefined,
     body: JSON.stringify({
       model: settings.modelId || 'gpt-4o',
       messages: messagePayloads,
@@ -851,20 +1045,57 @@ const sendChatApiRequest = async (chat) => {
   }
 
   const data = await response.json();
-  const reply = data.choices?.[0]?.message?.content;
-  if (!reply) throw new Error('Response format is missing choices content.');
+  console.log('API response payload:', data);
+
+  let reply = '';
+  let found = false;
+
+  if (data) {
+    const message = data.choices?.[0]?.message;
+    if (message) {
+      if (typeof message.content === 'string') {
+        reply = message.content;
+        found = true;
+      }
+
+      // Handle extra reasoning fields (like deepseek reasoning_content or thinking blocks)
+      if (message.reasoning_content && typeof message.reasoning_content === 'string') {
+        reply = `<think>\n${message.reasoning_content}\n</think>\n\n` + reply;
+        found = true;
+      } else if (message.thinking && typeof message.thinking === 'string') {
+        reply = `<think>\n${message.thinking}\n</think>\n\n` + reply;
+        found = true;
+      }
+    } else if (data.choices?.[0]?.text && typeof data.choices[0].text === 'string') {
+      reply = data.choices[0].text;
+      found = true;
+    } else if (data.text && typeof data.text === 'string') {
+      reply = data.text;
+      found = true;
+    }
+  }
+
+  // If we couldn't parse any response but there's a specific API error field
+  if (!found && data?.error) {
+    throw new Error(data.error.message || JSON.stringify(data.error));
+  }
+
+  // If still not parsed successfully
+  if (!found) {
+    throw new Error(`Response format unrecognized. Expected choices content, but received: ${JSON.stringify(data).substring(0, 250)}`);
+  }
 
   return reply;
 };
 
-// Extracts any <thinking> or <thought> tag structures from model response and styles them as a beautiful accordion
+// Extracts any <thinking>, <thought>, or <think> tag structures from model response and styles them as a beautiful accordion
 const extractThinkingAndFormat = (text, msgId) => {
   let thinkingBlocks = [];
   let remainingText = text;
 
-  // Pattern matches case-insensitive <thinking> or <thought> blocks
+  // Pattern matches case-insensitive <thinking>, <thought>, or <think> blocks
   // Handles unclosed tags too by matching up to end of string if close tag is missing
-  const regex = /<(thinking|thought)>([\s\S]*?)(?:<\/\1>|$)/gi;
+  const regex = /<(thinking|thought|think)>([\s\S]*?)(?:<\/\1>|$)/gi;
   
   remainingText = text.replace(regex, (match, tag, content) => {
     thinkingBlocks.push(content.trim());
@@ -927,7 +1158,7 @@ const formatMessageContent = (text, msgId) => {
         <div class="code-block-container">
           <div class="code-block-header">
             <span class="code-block-lang">${part.lang}</span>
-            <button class="code-block-copy" onclick="copySnippet('${part.blockId}')" id="btn-${part.blockId}">
+            <button class="code-block-copy" data-block-id="${part.blockId}" id="btn-${part.blockId}">
               <!-- Copy Icon SVG -->
               <svg class="icon" style="width: 10px; height: 10px;" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
               <span>Copy</span>
@@ -966,15 +1197,7 @@ const formatMessageContent = (text, msgId) => {
 
       return segments.map(seg => {
         if (seg.type === 'math-block') {
-          if (typeof katex !== 'undefined') {
-            try {
-              return `<div class="latex-block">${katex.renderToString(seg.formula, { displayMode: true, throwOnError: false })}</div>`;
-            } catch (e) {
-              return `<div class="latex-block-error">$$${escapeHtml(seg.formula)}$$</div>`;
-            }
-          } else {
-            return `<pre class="latex-block-fallback">$$${escapeHtml(seg.formula)}$$</pre>`;
-          }
+          return renderMathToHtml(seg.formula, true);
         } else {
           // Regular paragraphs segment. Process line by line.
           const lines = seg.content.split('\n');
@@ -996,15 +1219,7 @@ const formatMessageContent = (text, msgId) => {
                 formula = m.slice(2, -2);
               }
 
-              if (typeof katex !== 'undefined') {
-                try {
-                  return `<span class="latex-inline">${katex.renderToString(formula.trim(), { displayMode: false, throwOnError: false })}</span>`;
-                } catch (e) {
-                  return `<span class="latex-inline-error">${escapeHtml(m)}</span>`;
-                }
-              } else {
-                return `<code>${escapeHtml(m)}</code>`;
-              }
+              return renderMathToHtml(formula.trim(), false);
             });
 
             // Parse Bold (**bold**) and inline code (`code`)
@@ -1022,6 +1237,87 @@ const formatMessageContent = (text, msgId) => {
   }).join('');
 };
 
+// Highly robust local math formula compiler using inline-CSS & unicode replacement to run natively offline without remote CDNs
+const renderMathToHtml = (formula, displayMode) => {
+  let html = escapeHtml(formula);
+
+  // Greek letters replacements
+  const greekLetters = {
+    '\\\\alpha': 'α', '\\\\beta': 'β', '\\\\gamma': 'γ', '\\\\delta': 'δ',
+    '\\\\epsilon': 'ε', '\\\\zeta': 'ζ', '\\\\eta': 'η', '\\\\theta': 'θ',
+    '\\\\iota': 'ι', '\\\\kappa': 'κ', '\\\\lambda': 'λ', '\\\\mu': 'μ',
+    '\\\\nu': 'ν', '\\\\xi': 'ξ', '\\\\pi': 'π', '\\\\rho': 'ρ',
+    '\\\\sigma': 'σ', '\\\\tau': 'τ', '\\\\upsilon': 'υ', '\\\\phi': 'φ',
+    '\\\\chi': 'χ', '\\\\psi': 'ψ', '\\\\omega': 'ω',
+    '\\\\Gamma': 'Γ', '\\\\Delta': 'Δ', '\\\\Theta': 'Θ', '\\\\Lambda': 'Λ',
+    '\\\\Xi': 'Ξ', '\\\\Pi': 'Π', '\\\\Sigma': 'Σ', '\\\\Phi': 'Φ',
+    '\\\\Psi': 'Ψ', '\\\\Omega': 'Ω'
+  };
+
+  for (const [key, val] of Object.entries(greekLetters)) {
+    const regex = new RegExp(key, 'g');
+    html = html.replace(regex, val);
+  }
+
+  // Common math symbols replacements
+  const mathSymbols = {
+    '\\\\infty': '∞', '\\\\times': '×', '\\\\div': '÷', '\\\\approx': '≈',
+    '\\\\ne': '≠', '\\\\le': '≤', '\\\\ge': '≥', '\\\\pm': '±',
+    '\\\\cdot': '•', '\\\\partial': '∂', '\\\\nabla': '∇', '\\\\sum': '∑',
+    '\\\\int': '∫', '\\\\prod': '∏', '\\\\in': '∈', '\\\\notin': '∉',
+    '\\\\forall': '∀', '\\\\exists': '∃', '\\\\rightarrow': '→',
+    '\\\\leftarrow': '←', '\\\\leftrightarrow': '↔', '\\\\Rightarrow': '⇒',
+    '\\\\Leftarrow': '⇐', '\\\\to': '→'
+  };
+
+  for (const [key, val] of Object.entries(mathSymbols)) {
+    const regex = new RegExp(key, 'g');
+    html = html.replace(regex, val);
+  }
+
+  // Handle fractions recursively to handle nested equations
+  for (let i = 0; i < 4; i++) {
+    html = html.replace(/\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, (match, num, den) => {
+      return `<span style="display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center; line-height: 1.1; padding: 0 4px;"><span style="border-bottom: 1px solid var(--text-main); padding-bottom: 2px; font-size: 0.95em;">${num}</span><span style="padding-top: 1.5px; font-size: 0.9em;">${den}</span></span>`;
+    });
+  }
+
+  // Handle square roots recursively
+  for (let i = 0; i < 4; i++) {
+    html = html.replace(/\\sqrt\s*\{([^{}]+)\}/g, (match, inner) => {
+      return `<span style="display: inline-flex; align-items: center; vertical-align: middle;"><span style="font-size: 1.15em; line-height: 1; margin-right: -1px; font-family: sans-serif; font-weight: 200;">√</span><span style="border-top: 1px solid var(--text-main); padding-top: 1px; font-size: 0.95em; margin-left: 1px;">${inner}</span></span>`;
+    });
+  }
+
+  // Handle superscripts ^{...} and ^char
+  html = html.replace(/\^\{([^{}]+)\}/g, '<sup>$1</sup>');
+  html = html.replace(/\^([0-9a-zA-Z+-=]+)/g, '<sup>$1</sup>');
+
+  // Handle subscripts _{...} and _char
+  html = html.replace(/_\{([^{}]+)\}/g, '<sub>$1</sub>');
+  html = html.replace(/_([0-9a-zA-Z+-=]+)/g, '<sub>$1</sub>');
+
+  // Handle formatting commands
+  html = html.replace(/\\mathrm\s*\{([^{}]+)\}/g, '<span style="font-family: sans-serif;">$1</span>');
+  html = html.replace(/\\mathbf\s*\{([^{}]+)\}/g, '<strong>$1</strong>');
+  html = html.replace(/\\mathcal\s*\{([^{}]+)\}/g, '<span style="font-family: cursive; font-style: italic;">$1</span>');
+  html = html.replace(/\\text\s*\{([^{}]+)\}/g, '<span>$1</span>');
+  
+  html = html.replace(/\\left\(/g, '(').replace(/\\right\)/g, ')');
+  html = html.replace(/\\left\[/g, '[').replace(/\\right\]/g, ']');
+  html = html.replace(/\\left\\\{/g, '{').replace(/\\right\\\}/g, '}');
+  html = html.replace(/\\\{/g, '{').replace(/\\\}/g, '}');
+
+  html = html.replace(/\\\\/g, '<br/>');
+  html = html.replace(/\\/g, '');
+
+  if (displayMode) {
+    return `<div class="latex-block" style="font-family: var(--font-sans); font-size: 1.15em; line-height: 1.6; overflow-x: auto; display: block; text-align: center; padding: 12px; margin: 10px 0; background-color: rgba(24, 24, 27, 0.4); border-radius: 6px;">${html}</div>`;
+  } else {
+    return `<span class="latex-inline" style="font-family: var(--font-sans); font-size: 1.05em; line-height: 1.2; padding: 1px 4px; background-color: rgba(39, 39, 42, 0.3); border-radius: 3px;">${html}</span>`;
+  }
+};
+
 // Utils: escape tags
 const escapeHtml = (unsafe) => {
   return unsafe
@@ -1031,28 +1327,5 @@ const escapeHtml = (unsafe) => {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 };
-
-// Global clipboard copy helper accessible from HTML
-window.copySnippet = (blockId) => {
-  const element = document.getElementById(`pre-${blockId}`);
-  if (!element) return;
-
-  navigator.clipboard.writeText(element.innerText).then(() => {
-    const btn = document.getElementById(`btn-${blockId}`);
-    if (btn) {
-      btn.innerHTML = `
-        <svg class="icon" style="color: var(--success); width: 10px; height: 10px;" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
-        <span style="color: var(--success);">Copied!</span>
-      `;
-      setTimeout(() => {
-        btn.innerHTML = `
-          <svg class="icon" style="width: 10px; height: 10px;" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-          <span>Copy</span>
-        `;
-      }, 1500);
-    }
-  });
-};
-
 // Launch App
 init();
