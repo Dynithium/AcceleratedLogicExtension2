@@ -25,6 +25,7 @@ let chats = [];
 let activeChatId = null;
 let isSending = false;
 let editingChatId = null;
+let activeAttachments = []; // Array of Base64 strings with data URI prefix
 
 // Is Extension Context Checker
 const isExtensionContext = () => {
@@ -94,6 +95,9 @@ const elements = {
   testBtnText: document.getElementById('test-btn-text'),
   testAlertBanner: document.getElementById('test-alert-banner'),
   resetSettingsBtn: document.getElementById('reset-settings-btn'),
+  attachBtn: document.getElementById('attach-btn'),
+  fileInput: document.getElementById('file-input'),
+  attachmentPreviewContainer: document.getElementById('attachment-preview-container'),
 };
 
 // Initialize Application
@@ -211,6 +215,59 @@ const setupEventListeners = () => {
   elements.settingsForm.addEventListener('submit', handleSaveSettings);
   elements.inputForm.addEventListener('submit', handleSendMessage);
 
+  // Attachment button and input triggers
+  elements.attachBtn.addEventListener('click', () => elements.fileInput.click());
+  elements.fileInput.addEventListener('change', (e) => {
+    handleFileSelect(e.target.files);
+    elements.fileInput.value = ''; // Reset input to allow re-selecting same file
+  });
+
+  // Paste image handler directly in message input
+  elements.messageInput.addEventListener('paste', (e) => {
+    const items = (e.clipboardData || e.originalEvent?.clipboardData)?.items;
+    if (items) {
+      const files = [];
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].kind === 'file' && items[i].type.startsWith('image/')) {
+          files.push(items[i].getAsFile());
+        }
+      }
+      if (files.length > 0) {
+        handleFileSelect(files);
+      }
+    }
+  });
+
+  // Drag & drop file handlers with visually responsive highlighted state
+  const dragEvents = ['dragenter', 'dragover'];
+  const undragEvents = ['dragleave', 'drop'];
+
+  dragEvents.forEach(eventName => {
+    elements.inputForm.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      elements.inputForm.classList.add('dragover');
+    }, false);
+  });
+
+  undragEvents.forEach(eventName => {
+    elements.inputForm.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      elements.inputForm.classList.remove('dragover');
+    }, false);
+  });
+
+  elements.inputForm.addEventListener('drop', (e) => {
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      const imgFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+      if (imgFiles.length > 0) {
+        handleFileSelect(imgFiles);
+      }
+    }
+  });
+
   // Message area key down triggers for Shift+Enter support
   elements.messageInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -223,12 +280,80 @@ const setupEventListeners = () => {
   elements.messageInput.addEventListener('input', function() {
     this.style.height = 'auto';
     this.style.height = (this.scrollHeight) + 'px';
-    if (this.value.trim().length > 0) {
-      elements.sendBtn.classList.add('active');
-    } else {
-      elements.sendBtn.classList.remove('active');
-    }
+    updateSendButtonState();
   });
+};
+
+// Process newly added image files (converts to Base64 data urls)
+const handleFileSelect = (files) => {
+  if (!files || files.length === 0) return;
+
+  Array.from(files).forEach(file => {
+    if (!file.type.startsWith('image/')) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const base64Url = e.target.result;
+      
+      // Prevent duplicates
+      if (!activeAttachments.includes(base64Url)) {
+        activeAttachments.push(base64Url);
+        renderAttachmentPreviews();
+        updateSendButtonState();
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+};
+
+// Renders thumbnail previews for current attachments
+const renderAttachmentPreviews = () => {
+  const container = elements.attachmentPreviewContainer;
+  container.innerHTML = '';
+
+  if (activeAttachments.length === 0) {
+    container.classList.add('hidden');
+    return;
+  }
+
+  container.classList.remove('hidden');
+
+  activeAttachments.forEach((b64, index) => {
+    const div = document.createElement('div');
+    div.className = 'attachment-preview';
+
+    const img = document.createElement('img');
+    img.src = b64;
+    img.alt = 'Attachment thumbnail';
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'attachment-remove-btn';
+    removeBtn.innerText = '×';
+    removeBtn.title = 'Remove image';
+    removeBtn.onclick = (e) => {
+      e.stopPropagation();
+      activeAttachments.splice(index, 1);
+      renderAttachmentPreviews();
+      updateSendButtonState();
+    };
+
+    div.appendChild(img);
+    div.appendChild(removeBtn);
+    container.appendChild(div);
+  });
+};
+
+// Syncs send button highlighted state
+const updateSendButtonState = () => {
+  const hasText = elements.messageInput.value.trim().length > 0;
+  const hasFiles = activeAttachments.length > 0;
+
+  if (hasText || hasFiles) {
+    elements.sendBtn.classList.add('active');
+  } else {
+    elements.sendBtn.classList.remove('active');
+  }
 };
 
 // Switch view screen layout
@@ -524,10 +649,18 @@ const renderActiveChat = () => {
       bubble.className = 'message-bubble';
 
       if (isUser) {
-        bubble.innerText = msg.content;
+        let contentHtml = escapeHtml(msg.content || '');
+        if (msg.attachments && msg.attachments.length > 0) {
+          contentHtml += `<div class="msg-bubble-attachments" style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;">`;
+          msg.attachments.forEach(url => {
+            contentHtml += `<img src="${url}" style="max-width: 140px; max-height: 140px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); display: block;" />`;
+          });
+          contentHtml += `</div>`;
+        }
+        bubble.innerHTML = contentHtml || '<span style="font-style: italic; color: var(--text-muted);">Sent an image</span>';
       } else {
         bubble.className += ' formatted-text';
-        bubble.innerHTML = formatMessageContent(msg.content, msg.id);
+        bubble.innerHTML = extractThinkingAndFormat(msg.content || '', msg.id);
       }
 
       const meta = document.createElement('div');
@@ -573,16 +706,23 @@ const sendPreset = (promptText) => {
 const handleSendMessage = async (e) => {
   if (e) e.preventDefault();
   const inputVal = elements.messageInput.value.trim();
-  if (!inputVal || isSending) return;
+  const hasAttachments = activeAttachments.length > 0;
+  if ((!inputVal && !hasAttachments) || isSending) return;
 
   const chat = chats.find(c => c.id === activeChatId);
   if (!chat) return;
+
+  // Preserve active attachments and clear immediately
+  const msgAttachments = [...activeAttachments];
+  activeAttachments = [];
+  renderAttachmentPreviews();
 
   // Create User message payload
   const userMsg = {
     id: 'msg_' + Date.now(),
     role: 'user',
     content: inputVal,
+    attachments: msgAttachments,
     timestamp: Date.now(),
   };
 
@@ -591,8 +731,9 @@ const handleSendMessage = async (e) => {
 
   // If chat list has no custom title, auto rename it based on first 4 words
   if (chat.messages.length === 1 && chat.title.startsWith('New Chat')) {
-    const words = inputVal.split(/\s+/).slice(0, 4).join(' ');
-    chat.title = words + (inputVal.split(/\s+/).length > 4 ? '...' : '');
+    const titleBase = inputVal || 'Image Query';
+    const words = titleBase.split(/\s+/).slice(0, 4).join(' ');
+    chat.title = words + (titleBase.split(/\s+/).length > 4 ? '...' : '');
   }
 
   // Update storage state
@@ -653,10 +794,24 @@ const buildPayloadMessages = (chat) => {
 
   // 2. Add message context history
   chat.messages.forEach(m => {
-    payload.push({
-      role: m.role,
-      content: m.content
-    });
+    if (m.role === 'user' && m.attachments && m.attachments.length > 0) {
+      const contentArray = [{ type: 'text', text: m.content || '' }];
+      m.attachments.forEach(b64 => {
+        contentArray.push({
+          type: 'image_url',
+          image_url: { url: b64 }
+        });
+      });
+      payload.push({
+        role: m.role,
+        content: contentArray
+      });
+    } else {
+      payload.push({
+        role: m.role,
+        content: m.content
+      });
+    }
   });
 
   return payload;
@@ -702,7 +857,46 @@ const sendChatApiRequest = async (chat) => {
   return reply;
 };
 
-// Self-contained simple custom text renderer (parses triple-backticks code blocks with inline tags)
+// Extracts any <thinking> or <thought> tag structures from model response and styles them as a beautiful accordion
+const extractThinkingAndFormat = (text, msgId) => {
+  let thinkingBlocks = [];
+  let remainingText = text;
+
+  // Pattern matches case-insensitive <thinking> or <thought> blocks
+  // Handles unclosed tags too by matching up to end of string if close tag is missing
+  const regex = /<(thinking|thought)>([\s\S]*?)(?:<\/\1>|$)/gi;
+  
+  remainingText = text.replace(regex, (match, tag, content) => {
+    thinkingBlocks.push(content.trim());
+    return '';
+  });
+
+  let html = '';
+  if (thinkingBlocks.length > 0) {
+    thinkingBlocks.forEach(content => {
+      if (content.length > 0) {
+        html += `
+          <details class="thinking-container">
+            <summary class="thinking-header">
+              <!-- Thinking Sparkle / Mind icon -->
+              <svg class="icon" style="color: var(--primary); width: 11px; height: 11px; animation: spin 8s linear infinite;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+              </svg>
+              <span>Thinking</span>
+            </summary>
+            <div class="thinking-content">${escapeHtml(content)}</div>
+          </details>
+        `;
+      }
+    });
+  }
+
+  // Format and append remaining text body
+  html += formatMessageContent(remainingText.trim(), msgId);
+  return html;
+};
+
+// Self-contained simple custom text renderer (parses triple-backticks code blocks, block math LaTeX, and inline formatting)
 const formatMessageContent = (text, msgId) => {
   const parts = [];
   const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
@@ -729,8 +923,6 @@ const formatMessageContent = (text, msgId) => {
 
   return parts.map(part => {
     if (part.type === 'code') {
-      // Create copy button functionality directly
-      const escapedCode = part.code.replace(/["']/g, '&apos;');
       return `
         <div class="code-block-container">
           <div class="code-block-header">
@@ -745,21 +937,86 @@ const formatMessageContent = (text, msgId) => {
         </div>
       `;
     } else {
-      // Format simple bullet lines, inline tags
-      const lines = part.content.split('\n');
-      return lines.map(line => {
-        // Render simple bullet lists
-        const isBullet = line.trim().startsWith('* ') || line.trim().startsWith('- ');
-        let content = isBullet ? line.trim().substring(2) : line;
+      // It's a text part. Let's first separate out block LaTeX equations from normal paragraphs
+      const segments = [];
+      let lastTextIdx = 0;
+      const mathBlockRegex = /(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\])/g;
+      let mathMatch;
 
-        // Parse Bold (**bold**) and inline code (`code`)
-        content = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-        content = content.replace(/`(.*?)`/g, '<code>$1</code>');
-
-        if (isBullet) {
-          return `<ul style="margin-top: 3px;"><li>${content}</li></ul>`;
+      while ((mathMatch = mathBlockRegex.exec(part.content)) !== null) {
+        const precedingText = part.content.substring(lastTextIdx, mathMatch.index);
+        if (precedingText) {
+          segments.push({ type: 'plain', content: precedingText });
         }
-        return line.trim() === '' ? '<div style="height: 6px;"></div>' : `<p>${content}</p>`;
+
+        let rawMatch = mathMatch[0];
+        let formula = '';
+        if (rawMatch.startsWith('$$')) {
+          formula = rawMatch.slice(2, -2);
+        } else {
+          formula = rawMatch.slice(2, -2); // for \[ ... \]
+        }
+        segments.push({ type: 'math-block', formula: formula.trim() });
+        lastTextIdx = mathBlockRegex.lastIndex;
+      }
+
+      if (lastTextIdx < part.content.length) {
+        segments.push({ type: 'plain', content: part.content.substring(lastTextIdx) });
+      }
+
+      return segments.map(seg => {
+        if (seg.type === 'math-block') {
+          if (typeof katex !== 'undefined') {
+            try {
+              return `<div class="latex-block">${katex.renderToString(seg.formula, { displayMode: true, throwOnError: false })}</div>`;
+            } catch (e) {
+              return `<div class="latex-block-error">$$${escapeHtml(seg.formula)}$$</div>`;
+            }
+          } else {
+            return `<pre class="latex-block-fallback">$$${escapeHtml(seg.formula)}$$</pre>`;
+          }
+        } else {
+          // Regular paragraphs segment. Process line by line.
+          const lines = seg.content.split('\n');
+          return lines.map(line => {
+            const isBullet = line.trim().startsWith('* ') || line.trim().startsWith('- ');
+            let content = isBullet ? line.trim().substring(2) : line;
+
+            // Process inline math LaTeX: $ ... $ or \( ... \) BEFORE bold/inline-code to prevent tag conflicts
+            const inlineMathRegex = /(\$[^\$\s](?:[^\$]*?[^\$\s])?\$|\\\([\s\S]+?\\\))/g;
+            content = content.replace(inlineMathRegex, (m) => {
+              let formula = '';
+              if (m.startsWith('$')) {
+                formula = m.slice(1, -1);
+                // Exclude basic currency signs like $10 or $10.99 from LaTeX typesetting
+                if (/^\d+(\.\d+)?$/.test(formula)) {
+                  return m;
+                }
+              } else {
+                formula = m.slice(2, -2);
+              }
+
+              if (typeof katex !== 'undefined') {
+                try {
+                  return `<span class="latex-inline">${katex.renderToString(formula.trim(), { displayMode: false, throwOnError: false })}</span>`;
+                } catch (e) {
+                  return `<span class="latex-inline-error">${escapeHtml(m)}</span>`;
+                }
+              } else {
+                return `<code>${escapeHtml(m)}</code>`;
+              }
+            });
+
+            // Parse Bold (**bold**) and inline code (`code`)
+            content = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            content = content.replace(/`(.*?)`/g, '<code>$1</code>');
+
+            if (isBullet) {
+              return `<ul style="margin-top: 3px; margin-bottom: 3px; padding-left: 16px; list-style-type: disc;"><li>${content}</li></ul>`;
+            }
+            return line.trim() === '' ? '<div style="height: 6px;"></div>' : `<p style="margin-bottom: 4px; line-height: 1.5;">${content}</p>`;
+          }).join('');
+        }
       }).join('');
     }
   }).join('');
