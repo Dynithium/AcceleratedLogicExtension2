@@ -320,126 +320,28 @@ const setupEventListeners = () => {
   });
 };
 
-// Native browser-based Flate decompression of PDF stream object contents
-const decompressFlateStream = async (compressedBytes) => {
-  try {
-    const ds = new DecompressionStream('deflate');
-    const writer = ds.writable.getWriter();
-    writer.write(compressedBytes);
-    writer.close();
-    
-    const response = new Response(ds.readable);
-    const buffer = await response.arrayBuffer();
-    return new Uint8Array(buffer);
-  } catch (err) {
-    console.error('PDF Stream decompression failed:', err);
-    return null;
-  }
-};
-
-// Pure client-side PDF text extraction using native DecompressionStream (Chrome 100+)
+// Pure client-side PDF text extraction using PDF.js (runs locally)
 const extractTextFromPdf = async (arrayBuffer) => {
   try {
-    const bytes = new Uint8Array(arrayBuffer);
+    const pdfjs = await loadPdfJs();
+    const loadingTask = pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) });
+    const pdf = await loadingTask.promise;
     
-    // Chunked base64 binary conversion to avoid stack overflow
-    let binary = "";
-    const len = bytes.length;
-    const chunkSize = 10000;
-    for (let i = 0; i < len; i += chunkSize) {
-      const sub = bytes.subarray(i, i + chunkSize);
-      binary += String.fromCharCode.apply(null, sub);
-    }
-
     let extractedText = "";
-
-    // Helper to extract plain text string inside parentheses (e.g., (text))
-    const parseDecompressedText = (decompressedBytes) => {
-      let content = "";
-      const len = decompressedBytes.length;
-      let currentString = "";
-      let inParen = false;
-      let parenDepth = 0;
-
-      for (let i = 0; i < len; i++) {
-        const char = String.fromCharCode(decompressedBytes[i]);
-        if (char === '(') {
-          if (!inParen) {
-            inParen = true;
-            parenDepth = 1;
-            currentString = "";
-          } else {
-            parenDepth++;
-            currentString += char;
-          }
-        } else if (char === ')') {
-          if (inParen) {
-            parenDepth--;
-            if (parenDepth === 0) {
-              inParen = false;
-              // Clean up octal values or escape slashes
-              let cleanStr = currentString.replace(/\\([0-7]{3})/g, (m, octal) => {
-                return String.fromCharCode(parseInt(octal, 8));
-              });
-              cleanStr = cleanStr.replace(/\\(.)/g, "$1");
-              content += cleanStr + " ";
-            } else {
-              currentString += char;
-            }
-          }
-        } else if (inParen) {
-          currentString += char;
-        }
+    // Extract text page-by-page (up to 5 pages)
+    const maxPagesToExtract = Math.min(pdf.numPages, 5);
+    for (let pageNum = 1; pageNum <= maxPagesToExtract; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items.map(item => item.str).join(" ");
+      if (pageText.trim().length > 0) {
+        extractedText += `--- PDF Page ${pageNum} Text ---\n${pageText}\n\n`;
       }
-      return content;
-    };
-
-    let lastIndex = 0;
-    // Iterate through all pdf objects to locate stream segments
-    while (true) {
-      const streamIdx = binary.indexOf("stream", lastIndex);
-      if (streamIdx === -1) break;
-      
-      const endstreamIdx = binary.indexOf("endstream", streamIdx);
-      if (endstreamIdx === -1) break;
-
-      const dictStartIdx = binary.lastIndexOf("<<", streamIdx);
-      if (dictStartIdx !== -1 && dictStartIdx < streamIdx) {
-        const dict = binary.substring(dictStartIdx, streamIdx);
-        if (dict.includes("/FlateDecode")) {
-          let startOffset = 6;
-          if (binary.charCodeAt(streamIdx + 6) === 13 && binary.charCodeAt(streamIdx + 7) === 10) {
-            startOffset = 8;
-          } else if (binary.charCodeAt(streamIdx + 6) === 10) {
-            startOffset = 7;
-          }
-
-          const compressedBytes = bytes.subarray(streamIdx + startOffset, endstreamIdx);
-          if (compressedBytes.length > 0) {
-            const decompressed = await decompressFlateStream(compressedBytes);
-            if (decompressed) {
-              const text = parseDecompressedText(decompressed);
-              if (text.trim().length > 0) {
-                extractedText += text + "\n";
-              }
-            }
-          }
-        }
-      }
-      lastIndex = endstreamIdx + 9;
     }
-
-    let cleanLines = extractedText.split('\n').map(line => {
-      return line.replace(/\s+/g, ' ').trim();
-    }).filter(line => {
-      if (line.length < 3) return false;
-      const printable = line.replace(/[^a-zA-Z0-9\s.,;:!?@_()-]/g, '');
-      return (printable.length / line.length) > 0.4;
-    });
-
-    return cleanLines.join('\n').trim();
+    
+    return extractedText.trim();
   } catch (err) {
-    console.error("Failed to parse PDF binary content:", err);
+    console.error("PDF.js text extraction failed:", err);
     return "";
   }
 };
@@ -533,7 +435,8 @@ const doesModelSupportVision = (modelId) => {
 let tesseractLib = null;
 const loadTesseract = async () => {
   if (!tesseractLib) {
-    tesseractLib = await import('./tesseract.esm.min.js');
+    const importPath = isExtensionContext() ? chrome.runtime.getURL('tesseract.esm.min.js') : './tesseract.esm.min.js';
+    tesseractLib = await import(importPath);
   }
   return tesseractLib;
 };
@@ -592,7 +495,8 @@ const runOcrOnPdfPages = async (renderedPages) => {
 let pdfjsLib = null;
 const loadPdfJs = async () => {
   if (!pdfjsLib) {
-    pdfjsLib = await import('./pdf.min.mjs');
+    const importPath = isExtensionContext() ? chrome.runtime.getURL('pdf.min.mjs') : './pdf.min.mjs';
+    pdfjsLib = await import(importPath);
     if (isExtensionContext()) {
       pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.min.mjs');
     } else {
