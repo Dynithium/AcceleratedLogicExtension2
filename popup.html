@@ -1199,6 +1199,22 @@
             </div>
           </div>
 
+          <!-- Max PDF Pages to Render/Send -->
+          <div class="form-group">
+            <label class="form-label" for="setting-pdf-page-limit">Max PDF Pages to render/send</label>
+            <input type="number" id="setting-pdf-page-limit" class="form-input form-input-mono" min="1" max="25" value="5" required>
+            <span class="form-input-subtext">First N pages rendered as PNGs for the model. Max recommended: 15.</span>
+          </div>
+
+          <!-- Force Multimodal/Vision Payload -->
+          <div class="form-group" style="flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; padding-top: 4px; padding-bottom: 4px;">
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+              <label class="form-label" style="cursor: pointer; display: block;" for="setting-force-vision">Force Vision/Multimodal Mode</label>
+              <span class="form-input-subtext" style="margin-top: 0;">Ignore fallback and send rich image content for any model.</span>
+            </div>
+            <input type="checkbox" id="setting-force-vision" style="cursor: pointer; width: 14px; height: 14px; accent-color: var(--primary);">
+          </div>
+
           <!-- Connection Diagnostic Test Button -->
           <button type="button" id="test-connection-btn" class="test-conn-btn">
             <!-- Sparkles icon -->

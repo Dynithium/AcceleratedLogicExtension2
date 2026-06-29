@@ -8,6 +8,7 @@ const STORAGE_KEYS = {
   SETTINGS: 'omnichat_settings',
   CHATS: 'omnichat_chats',
   ACTIVE_CHAT_ID: 'omnichat_active_chat_id',
+  VISION_MODELS: 'omnichat_vision_models',
 };
 
 const DEFAULT_SETTINGS = {
@@ -17,6 +18,8 @@ const DEFAULT_SETTINGS = {
   systemPrompt: 'You are a helpful, context-aware AI assistant running inside a browser extension. Be concise, accurate, and direct.',
   temperature: 0.7,
   maxTokens: 1024,
+  pdfPageLimit: 5,
+  forceVision: false,
 };
 
 // Global App State
@@ -27,6 +30,8 @@ let isSending = false;
 let editingChatId = null;
 let activeAttachments = []; // Array of Base64 strings with data URI prefix
 let activeAbortController = null; // To support stop/pause generation function
+let testedVisionModels = {}; // Dynamic vision capability cache
+
 
 // Is Extension Context Checker
 const isExtensionContext = () => {
@@ -99,6 +104,8 @@ const elements = {
   attachBtn: document.getElementById('attach-btn'),
   fileInput: document.getElementById('file-input'),
   attachmentPreviewContainer: document.getElementById('attachment-preview-container'),
+  settingPdfPageLimit: document.getElementById('setting-pdf-page-limit'),
+  settingForceVision: document.getElementById('setting-force-vision'),
 };
 
 // Initialize Application
@@ -119,6 +126,15 @@ const init = async () => {
   elements.settingSystemPrompt.value = settings.systemPrompt;
   elements.settingTemperature.value = settings.temperature;
   elements.sliderTempVal.innerText = settings.temperature;
+  if (elements.settingPdfPageLimit) {
+    elements.settingPdfPageLimit.value = settings.pdfPageLimit !== undefined ? settings.pdfPageLimit : DEFAULT_SETTINGS.pdfPageLimit;
+  }
+  if (elements.settingForceVision) {
+    elements.settingForceVision.checked = settings.forceVision !== undefined ? settings.forceVision : DEFAULT_SETTINGS.forceVision;
+  }
+
+  // 1.5. Load tested vision models cache
+  testedVisionModels = await getStorageItem(STORAGE_KEYS.VISION_MODELS, {});
 
   // 2. Load Chats log
   chats = await getStorageItem(STORAGE_KEYS.CHATS, []);
@@ -136,6 +152,9 @@ const init = async () => {
   renderActiveChat();
   setupEventListeners();
   updateSendButtonState();
+
+  // Trigger non-blocking live vision check on start
+  triggerVisionTest(settings.modelId);
 };
 
 // Update Hint & Warning Indicator based on credentials
@@ -205,6 +224,12 @@ const setupEventListeners = () => {
     elements.settingSystemPrompt.value = DEFAULT_SETTINGS.systemPrompt;
     elements.settingTemperature.value = DEFAULT_SETTINGS.temperature;
     elements.sliderTempVal.innerText = DEFAULT_SETTINGS.temperature;
+    if (elements.settingPdfPageLimit) {
+      elements.settingPdfPageLimit.value = DEFAULT_SETTINGS.pdfPageLimit;
+    }
+    if (elements.settingForceVision) {
+      elements.settingForceVision.checked = DEFAULT_SETTINGS.forceVision;
+    }
     
     // Clear warning banners
     elements.testAlertBanner.classList.add('hidden');
@@ -328,8 +353,9 @@ const extractTextFromPdf = async (arrayBuffer) => {
     const pdf = await loadingTask.promise;
     
     let extractedText = "";
-    // Extract text page-by-page (up to 5 pages)
-    const maxPagesToExtract = Math.min(pdf.numPages, 5);
+    // Extract text page-by-page (up to settings.pdfPageLimit pages)
+    const limit = settings.pdfPageLimit !== undefined ? parseInt(settings.pdfPageLimit, 10) || 5 : 5;
+    const maxPagesToExtract = Math.min(pdf.numPages, limit);
     for (let pageNum = 1; pageNum <= maxPagesToExtract; pageNum++) {
       const page = await pdf.getPage(pageNum);
       const textContent = await page.getTextContent();
@@ -367,10 +393,13 @@ const convertSvgToPng = (svgDataUrl) => {
         resolve(canvas.toDataURL('image/png'));
       } catch (err) {
         console.error("SVG rendering to Canvas failed:", err);
+        showToast("SVG to PNG rendering failed. Using original SVG content.");
         resolve(svgDataUrl);
       }
     };
-    img.onerror = () => {
+    img.onerror = (err) => {
+      console.error("SVG Image loading error during SVG to PNG conversion:", err);
+      showToast("SVG image parsing failed. Using original content.");
       resolve(svgDataUrl);
     };
     img.src = svgDataUrl;
@@ -422,13 +451,115 @@ const resizeAndCompressImage = (dataUrl, maxDimension = 1024) => {
 
 // Check if a model supports vision capabilities natively
 const doesModelSupportVision = (modelId) => {
-  const lower = (modelId || '').toLowerCase();
-  // Standard families of models that are natively multimodal/vision-enabled
-  if (lower.includes('gpt-4o') || lower.includes('gpt-4-o') || lower.includes('gpt-4o-mini') || lower.includes('gpt-4-vision')) return true;
-  if (lower.includes('gemini')) return true;
-  if (lower.includes('claude-3-5') || lower.includes('claude-3.5') || lower.includes('claude-3-opus') || lower.includes('claude-3-sonnet') || lower.includes('claude-3-haiku')) return true;
-  if (lower.includes('vision') || lower.includes('vl') || lower.includes('multimodal')) return true;
+  // If user has explicitly forced vision/multimodal mode, bypass checks and return true
+  if (settings.forceVision) return true;
+
+  const id = (modelId || '').trim();
+  if (!id) return false;
+
+  // Check the dynamic live tested cache!
+  if (testedVisionModels[id] === true) {
+    return true;
+  }
+
   return false;
+};
+
+// Dynamically probes the configured model with a microscopic 1x1 base64 PNG
+// to verify real-time vision capabilities without throwing user-visible exceptions.
+const testModelVisionCapability = async (modelId, customSettings = null) => {
+  const currentSettings = customSettings || settings;
+  const baseUrl = currentSettings.baseUrl || 'https://api.openai.com/v1';
+  const apiKey = currentSettings.apiKey || '';
+  
+  if (!modelId) return false;
+
+  // If apiKey is empty and baseUrl is official OpenAI, do not run the test yet to avoid unnecessary 401s
+  if (!apiKey && baseUrl.includes('api.openai.com')) {
+    console.log(`Bypassing vision test for ${modelId} as API key is not configured yet.`);
+    return false;
+  }
+
+  const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+  const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: modelId,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Ok' },
+              { type: 'image_url', image_url: { url: tinyPng } }
+            ]
+          }
+        ],
+        temperature: 0.1,
+        max_tokens: 5
+      })
+    });
+
+    if (res.ok) {
+      console.log(`Vision capability dynamic check: Model "${modelId}" natively supports vision/multimodal payloads!`);
+      testedVisionModels[modelId] = true;
+      await setStorageItem(STORAGE_KEYS.VISION_MODELS, testedVisionModels);
+      return true;
+    } else {
+      const errText = await res.text();
+      console.warn(`Vision capability check rejected for model "${modelId}" with status ${res.status}:`, errText);
+      testedVisionModels[modelId] = false;
+      await setStorageItem(STORAGE_KEYS.VISION_MODELS, testedVisionModels);
+      return false;
+    }
+  } catch (err) {
+    console.error(`Vision capability check failed due to network error for model "${modelId}":`, err);
+    return false;
+  }
+};
+
+// Async wrapper to execute vision checks and update visual indicator states smoothly
+const triggerVisionTest = async (modelId, customSettings = null) => {
+  if (!modelId) return;
+  
+  // Set UI state to checking
+  updateModelVisionUIState(modelId, 'checking');
+  
+  const supports = await testModelVisionCapability(modelId, customSettings);
+  
+  updateModelVisionUIState(modelId, supports ? 'vision' : 'text');
+};
+
+// Syncs subtitle display with current detection state
+const updateModelVisionUIState = (modelId, state) => {
+  if (settings.modelId !== modelId) return; // Ignore stale check states
+
+  let text = modelId;
+  let color = 'var(--text-muted)';
+  
+  if (state === 'checking') {
+    text += ' (🔄 Verifying vision support...)';
+    color = 'var(--primary)';
+  } else if (state === 'vision' || testedVisionModels[modelId] === true) {
+    text += ' (📷 Vision Enabled)';
+    color = 'var(--success)';
+  } else if (state === 'text' || testedVisionModels[modelId] === false) {
+    text += ' (📝 Text-Only)';
+    color = 'var(--text-muted)';
+  } else {
+    text += ' (🔍 Unverified)';
+  }
+  
+  if (elements.headerModelSubtitle) {
+    elements.headerModelSubtitle.innerText = text;
+    elements.headerModelSubtitle.style.color = color;
+  }
 };
 
 // Dynamic local import of Tesseract.js (compliant with local Chrome security & Manifest V3)
@@ -514,7 +645,8 @@ const convertPdfToPngs = async (arrayBuffer) => {
     const pdf = await loadingTask.promise;
     
     const pageUrls = [];
-    const maxPagesToRender = Math.min(pdf.numPages, 3);
+    const limit = settings.pdfPageLimit !== undefined ? parseInt(settings.pdfPageLimit, 10) || 5 : 5;
+    const maxPagesToRender = Math.min(pdf.numPages, limit);
     
     for (let pageNum = 1; pageNum <= maxPagesToRender; pageNum++) {
       const page = await pdf.getPage(pageNum);
@@ -549,11 +681,60 @@ const convertPdfToPngs = async (arrayBuffer) => {
   }
 };
 
+// Beautiful non-blocking notification toast (iframe-friendly fallback for window.alert)
+const showToast = (message, type = 'error') => {
+  const toast = document.createElement('div');
+  toast.className = 'custom-toast';
+  toast.style.position = 'fixed';
+  toast.style.top = '12px';
+  toast.style.left = '50%';
+  toast.style.transform = 'translateX(-50%) translateY(-20px)';
+  toast.style.backgroundColor = type === 'error' ? 'var(--error)' : 'var(--success)';
+  toast.style.color = '#ffffff';
+  toast.style.padding = '8px 14px';
+  toast.style.borderRadius = '6px';
+  toast.style.fontSize = '10px';
+  toast.style.fontWeight = '500';
+  toast.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.5)';
+  toast.style.zIndex = '99999';
+  toast.style.opacity = '0';
+  toast.style.transition = 'opacity 0.25s ease, transform 0.25s ease';
+  toast.style.whiteSpace = 'nowrap';
+  
+  toast.innerText = message;
+  document.body.appendChild(toast);
+  
+  setTimeout(() => {
+    toast.style.opacity = '1';
+    toast.style.transform = 'translateX(-50%) translateY(0)';
+  }, 10);
+  
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(-50%) translateY(-20px)';
+    setTimeout(() => {
+      toast.remove();
+    }, 250);
+  }, 3000);
+};
+
 // Process newly added image and PDF files (converts to Base64 data urls with dynamic resizing)
 const handleFileSelect = (files) => {
   if (!files || files.length === 0) return;
 
+  const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
+
   Array.from(files).forEach(file => {
+    if (activeAttachments.length >= 10) {
+      showToast("Maximum limit of 10 attachments reached.");
+      return;
+    }
+
+    if (file.size > MAX_FILE_SIZE) {
+      showToast(`"${file.name}" exceeds 25MB limit.`);
+      return;
+    }
+
     const isImage = file.type.startsWith('image/');
     const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
     if (!isImage && !isPdf) return;
@@ -600,7 +781,7 @@ const handleFileSelect = (files) => {
 
             // Run local OCR on PDF pages asynchronously to find text in scanned files
             if (renderedPages.length > 0) {
-              runOcrOnPdfPages(renderedPages).then(combinedOcrText => {
+              const ocrPromise = runOcrOnPdfPages(renderedPages).then(combinedOcrText => {
                 attachmentObj.ocrText = combinedOcrText;
                 attachmentObj.ocrStatus = 'done';
                 if (combinedOcrText) {
@@ -608,11 +789,14 @@ const handleFileSelect = (files) => {
                   attachmentObj.extractedText = (attachmentObj.extractedText ? attachmentObj.extractedText + '\n\n' : '') + combinedOcrText;
                 }
                 renderAttachmentPreviews();
+                return combinedOcrText;
               }).catch(err => {
                 console.error("PDF local OCR error:", err);
                 attachmentObj.ocrStatus = 'failed';
                 renderAttachmentPreviews();
+                return '';
               });
+              attachmentObj.ocrPromise = ocrPromise;
             }
           }
         };
@@ -665,15 +849,18 @@ const handleFileSelect = (files) => {
           updateSendButtonState();
 
           // Run local OCR on image asynchronously
-          runOcrOnImage(base64Url).then(ocrResult => {
+          const ocrPromise = runOcrOnImage(base64Url).then(ocrResult => {
             attachmentObj.ocrText = ocrResult;
             attachmentObj.ocrStatus = 'done';
             renderAttachmentPreviews();
+            return ocrResult;
           }).catch(err => {
             console.error("Image local OCR error:", err);
             attachmentObj.ocrStatus = 'failed';
             renderAttachmentPreviews();
+            return '';
           });
+          attachmentObj.ocrPromise = ocrPromise;
         }
       };
       reader.readAsDataURL(file);
@@ -868,10 +1055,16 @@ const handleSaveSettings = async (e) => {
     systemPrompt: elements.settingSystemPrompt.value,
     temperature: parseFloat(elements.settingTemperature.value) || DEFAULT_SETTINGS.temperature,
     maxTokens: DEFAULT_SETTINGS.maxTokens,
+    pdfPageLimit: elements.settingPdfPageLimit ? parseInt(elements.settingPdfPageLimit.value, 10) || DEFAULT_SETTINGS.pdfPageLimit : DEFAULT_SETTINGS.pdfPageLimit,
+    forceVision: elements.settingForceVision ? elements.settingForceVision.checked : DEFAULT_SETTINGS.forceVision,
   };
 
   await setStorageItem(STORAGE_KEYS.SETTINGS, settings);
   updateAuthStatusHint();
+  
+  // Immediately trigger live dynamic vision capabilities verification
+  triggerVisionTest(settings.modelId);
+
   switchView('chat');
 };
 
@@ -1203,6 +1396,25 @@ const handleSendMessage = async (e) => {
 
   const chat = chats.find(c => c.id === activeChatId);
   if (!chat) return;
+
+  // Wait for all active attachments' OCR tasks to finish (with a visual status or temporary indicator)
+  const pendingOcrAttachments = activeAttachments.filter(att => att.ocrStatus === 'processing' && att.ocrPromise);
+  if (pendingOcrAttachments.length > 0) {
+    const sendBtnOriginalHtml = elements.sendBtn.innerHTML;
+    elements.sendBtn.disabled = true;
+    elements.sendBtn.innerHTML = `
+      <svg class="icon spinner" style="width: 10px; height: 10px; margin-right: 2px;" viewBox="0 0 24 24"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"></path></svg>
+      <span>OCR...</span>
+    `;
+    try {
+      await Promise.all(pendingOcrAttachments.map(att => att.ocrPromise));
+    } catch (e) {
+      console.warn("Error waiting for pending OCR:", e);
+    } finally {
+      elements.sendBtn.disabled = false;
+      elements.sendBtn.innerHTML = sendBtnOriginalHtml;
+    }
+  }
 
   // Preserve active attachments and clear immediately
   const msgAttachments = [...activeAttachments];
