@@ -566,8 +566,30 @@ const updateModelVisionUIState = (modelId, state) => {
 let tesseractLib = null;
 const loadTesseract = async () => {
   if (!tesseractLib) {
-    const importPath = isExtensionContext() ? chrome.runtime.getURL('tesseract.esm.min.js') : './tesseract.esm.min.js';
-    tesseractLib = await import(importPath);
+    if (isExtensionContext()) {
+      try {
+        const importPath = chrome.runtime.getURL('tesseract.esm.min.js');
+        const rawLib = await import(importPath);
+        tesseractLib = rawLib.createWorker ? rawLib : (rawLib.default || rawLib);
+        return tesseractLib;
+      } catch (err) {
+        console.error("Failed to load local extension Tesseract, trying absolute path:", err);
+      }
+    }
+
+    try {
+      const rawLib = await import('/tesseract.esm.min.js');
+      tesseractLib = rawLib.createWorker ? rawLib : (rawLib.default || rawLib);
+    } catch (err) {
+      console.warn("Failed to load local Tesseract in web preview, falling back to CDN:", err);
+      try {
+        const rawLib = await import('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.esm.min.js');
+        tesseractLib = rawLib.createWorker ? rawLib : (rawLib.default || rawLib);
+      } catch (cdnErr) {
+        console.error("All Tesseract.js load attempts failed:", cdnErr);
+        throw cdnErr;
+      }
+    }
   }
   return tesseractLib;
 };
@@ -583,8 +605,21 @@ const runOcrOnImage = async (imageUrl) => {
     }
 
     // Configure worker with fully localized asset paths to avoid remote CDN loads (Manifest V3 compliance)
-    const workerPath = isExtensionContext() ? chrome.runtime.getURL('worker.min.js') : './worker.min.js';
-    const corePath = isExtensionContext() ? chrome.runtime.getURL('tesseract-core.wasm.js') : './tesseract-core.wasm.js';
+    let workerPath = isExtensionContext() ? chrome.runtime.getURL('worker.min.js') : '/worker.min.js';
+    let corePath = isExtensionContext() ? chrome.runtime.getURL('tesseract-core.wasm.js') : '/tesseract-core.wasm.js';
+
+    if (!isExtensionContext()) {
+      try {
+        const testRes = await fetch(workerPath, { method: 'HEAD' });
+        if (!testRes.ok) {
+          workerPath = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js';
+          corePath = 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1/tesseract-core.wasm.js';
+        }
+      } catch (e) {
+        workerPath = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js';
+        corePath = 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1/tesseract-core.wasm.js';
+      }
+    }
 
     console.log("Local OCR initializing worker with paths:", { workerPath, corePath });
     const worker = await createWorker('eng', 1, {
@@ -622,16 +657,55 @@ const runOcrOnPdfPages = async (renderedPages) => {
   return combinedOcr.trim();
 };
 
-// Dynamic local import of PDF.js
+// Dynamic local import of PDF.js with automated fallback layers (Vite, MV3, & CDN)
 let pdfjsLib = null;
 const loadPdfJs = async () => {
   if (!pdfjsLib) {
-    const importPath = isExtensionContext() ? chrome.runtime.getURL('pdf.min.mjs') : './pdf.min.mjs';
-    pdfjsLib = await import(importPath);
     if (isExtensionContext()) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.min.mjs');
-    } else {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.mjs';
+      try {
+        const importPath = chrome.runtime.getURL('pdf.min.mjs');
+        const rawLib = await import(importPath);
+        pdfjsLib = rawLib.getDocument ? rawLib : (rawLib.default || rawLib);
+        
+        const workerUrl = chrome.runtime.getURL('pdf.worker.min.mjs');
+        if (pdfjsLib.GlobalWorkerOptions) {
+          pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+        } else if (rawLib.GlobalWorkerOptions) {
+          rawLib.GlobalWorkerOptions.workerSrc = workerUrl;
+        }
+        return pdfjsLib;
+      } catch (err) {
+        console.error("Failed to load local extension PDF.js, trying absolute path:", err);
+      }
+    }
+
+    // Web/Preview fallback: try local absolute path first, then fall back to CDN
+    try {
+      const rawLib = await import('/pdf.min.mjs');
+      pdfjsLib = rawLib.getDocument ? rawLib : (rawLib.default || rawLib);
+      
+      const workerUrl = '/pdf.worker.min.mjs';
+      if (pdfjsLib.GlobalWorkerOptions) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+      } else if (rawLib.GlobalWorkerOptions) {
+        rawLib.GlobalWorkerOptions.workerSrc = workerUrl;
+      }
+    } catch (err) {
+      console.warn("Failed to load local PDF.js in web preview, falling back to CDN:", err);
+      try {
+        const rawLib = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs');
+        pdfjsLib = rawLib.getDocument ? rawLib : (rawLib.default || rawLib);
+        
+        const workerUrl = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
+        if (pdfjsLib.GlobalWorkerOptions) {
+          pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+        } else if (rawLib.GlobalWorkerOptions) {
+          rawLib.GlobalWorkerOptions.workerSrc = workerUrl;
+        }
+      } catch (cdnErr) {
+        console.error("All PDF.js load attempts failed:", cdnErr);
+        throw cdnErr;
+      }
     }
   }
   return pdfjsLib;
