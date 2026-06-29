@@ -475,6 +475,48 @@ const convertSvgToPng = (svgDataUrl) => {
   });
 };
 
+// Scale down and compress any image to safe visual dimensions and a lightweight JPEG format
+const resizeAndCompressImage = (dataUrl, maxDimension = 1024, quality = 0.85) => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        let width = img.naturalWidth || img.width;
+        let height = img.naturalHeight || img.height;
+
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) {
+            height = Math.round((height * maxDimension) / width);
+            width = maxDimension;
+          } else {
+            width = Math.round((width * maxDimension) / height);
+            height = maxDimension;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+
+        // Draw solid white background for transparency fallback
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      } catch (err) {
+        console.error("Image resizing/compression failed:", err);
+        resolve(dataUrl);
+      }
+    };
+    img.onerror = () => {
+      resolve(dataUrl);
+    };
+    img.src = dataUrl;
+  });
+};
+
 // Dynamic local import of PDF.js
 let pdfjsLib = null;
 const loadPdfJs = async () => {
@@ -485,14 +527,14 @@ const loadPdfJs = async () => {
   return pdfjsLib;
 };
 
-// Convert PDF pages to PNG data URLs (first 3 pages to stay within token limits)
+// Convert PDF pages to highly compressed JPEG data URLs (first 3 pages to stay within token/payload limits)
 const convertPdfToPngs = async (arrayBuffer) => {
   try {
     const pdfjs = await loadPdfJs();
     const loadingTask = pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) });
     const pdf = await loadingTask.promise;
     
-    const pngUrls = [];
+    const pageUrls = [];
     const maxPagesToRender = Math.min(pdf.numPages, 3);
     
     for (let pageNum = 1; pageNum <= maxPagesToRender; pageNum++) {
@@ -514,20 +556,21 @@ const convertPdfToPngs = async (arrayBuffer) => {
       };
       await page.render(renderContext).promise;
       
-      const pngUrl = canvas.toDataURL('image/png');
-      pngUrls.push({
-        url: pngUrl,
+      // Generate highly optimized JPEG images instead of raw PNGs to prevent huge payload uploads
+      const jpegUrl = canvas.toDataURL('image/jpeg', 0.85);
+      pageUrls.push({
+        url: jpegUrl,
         pageNum: pageNum
       });
     }
-    return pngUrls;
+    return pageUrls;
   } catch (err) {
-    console.error("Failed to render PDF pages to PNG:", err);
+    console.error("Failed to render PDF pages to JPEG:", err);
     return [];
   }
 };
 
-// Process newly added image and PDF files (converts to Base64 data urls)
+// Process newly added image and PDF files (converts to Base64 data urls with dynamic resizing)
 const handleFileSelect = (files) => {
   if (!files || files.length === 0) return;
 
@@ -593,6 +636,15 @@ const handleFileSelect = (files) => {
           if (!fileName.toLowerCase().endsWith('.png')) {
             fileName += '.png';
           }
+        }
+
+        // Resize and compress ALL images to super compact JPEG format to prevent 413 Payload Too Large
+        base64Url = await resizeAndCompressImage(base64Url, 1024, 0.85);
+        fileType = 'image/jpeg';
+        if (fileName.lastIndexOf('.') !== -1) {
+          fileName = fileName.substring(0, fileName.lastIndexOf('.')) + '.jpg';
+        } else {
+          fileName += '.jpg';
         }
 
         const attachmentObj = {
@@ -1217,7 +1269,7 @@ const buildPayloadMessages = (chat) => {
         if (isPdf) {
           const extractedText = typeof att === 'object' && att.extractedText ? att.extractedText : '';
           
-          // Rendered pages are PNG images! Send them to the model so it can see the PDF visually!
+          // Rendered pages are JPEG images! Send them to the model so it can see the PDF visually!
           if (typeof att === 'object' && att.renderedPages && att.renderedPages.length > 0) {
             att.renderedPages.forEach(page => {
               contentArray.push({
@@ -1261,7 +1313,56 @@ const buildPayloadMessages = (chat) => {
   return payload;
 };
 
-// API chat completions client
+// Fallback message builder that strips base64 images but preserves full document/PDF extracted text
+const buildPayloadMessagesTextOnly = (chat) => {
+  const payload = [];
+
+  // 1. Add System Instructions
+  if (settings.systemPrompt && settings.systemPrompt.trim().length > 0) {
+    payload.push({
+      role: 'system',
+      content: settings.systemPrompt.trim()
+    });
+  }
+
+  // 2. Add message context history with text descriptions only
+  chat.messages.forEach(m => {
+    if (m.role === 'user' && m.attachments && m.attachments.length > 0) {
+      let extraTextPrompt = '';
+      
+      m.attachments.forEach(att => {
+        const url = typeof att === 'string' ? att : att.url;
+        const name = typeof att === 'string' ? 'Attachment' : att.name;
+        const isPdf = url.startsWith('data:application/pdf') || url.includes('pdf');
+
+        if (isPdf) {
+          const extractedText = typeof att === 'object' && att.extractedText ? att.extractedText : '';
+          if (extractedText) {
+            extraTextPrompt += `\n\n[Content of PDF Document "${name}":]\n${extractedText}\n[End of PDF Document content]\n`;
+          } else {
+            extraTextPrompt += `\n[Attached PDF Document: ${name}]`;
+          }
+        } else {
+          extraTextPrompt += `\n[Attached Image: ${name} (Image attached, text fallback mode)]`;
+        }
+      });
+
+      payload.push({
+        role: m.role,
+        content: (m.content || '') + extraTextPrompt
+      });
+    } else {
+      payload.push({
+        role: m.role,
+        content: m.content
+      });
+    }
+  });
+
+  return payload;
+};
+
+// API chat completions client with automatic vision-to-text fallback resilience
 const sendChatApiRequest = async (chat) => {
   const isOfficial = settings.baseUrl.includes('api.openai.com');
   if (!settings.apiKey && isOfficial) {
@@ -1273,18 +1374,61 @@ const sendChatApiRequest = async (chat) => {
   if (settings.apiKey) headers['Authorization'] = `Bearer ${settings.apiKey}`;
 
   const messagePayloads = buildPayloadMessages(chat);
+  const hasImagesInPayload = messagePayloads.some(m => Array.isArray(m.content) && m.content.some(c => c.type === 'image_url'));
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    signal: activeAbortController ? activeAbortController.signal : undefined,
-    body: JSON.stringify({
-      model: settings.modelId || 'gpt-4o',
-      messages: messagePayloads,
-      temperature: settings.temperature || 0.7,
-      max_tokens: settings.maxTokens || 1024,
-    }),
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers,
+      signal: activeAbortController ? activeAbortController.signal : undefined,
+      body: JSON.stringify({
+        model: settings.modelId || 'gpt-4o',
+        messages: messagePayloads,
+        temperature: settings.temperature || 0.7,
+        max_tokens: settings.maxTokens || 1024,
+      }),
+    });
+  } catch (fetchErr) {
+    if (hasImagesInPayload && fetchErr.name !== 'AbortError') {
+      console.warn("Multimodal request failed, retrying in text-only fallback mode:", fetchErr);
+      const textOnlyPayload = buildPayloadMessagesTextOnly(chat);
+      response = await fetch(url, {
+        method: 'POST',
+        headers,
+        signal: activeAbortController ? activeAbortController.signal : undefined,
+        body: JSON.stringify({
+          model: settings.modelId || 'gpt-4o',
+          messages: textOnlyPayload,
+          temperature: settings.temperature || 0.7,
+          max_tokens: settings.maxTokens || 1024,
+        }),
+      });
+    } else {
+      throw fetchErr;
+    }
+  }
+
+  if (response && !response.ok) {
+    if (hasImagesInPayload) {
+      console.warn(`Multimodal request returned status ${response.status}. Retrying in text-only fallback mode...`);
+      const textOnlyPayload = buildPayloadMessagesTextOnly(chat);
+      const retryResponse = await fetch(url, {
+        method: 'POST',
+        headers,
+        signal: activeAbortController ? activeAbortController.signal : undefined,
+        body: JSON.stringify({
+          model: settings.modelId || 'gpt-4o',
+          messages: textOnlyPayload,
+          temperature: settings.temperature || 0.7,
+          max_tokens: settings.maxTokens || 1024,
+        }),
+      });
+      if (retryResponse.ok) {
+        response = retryResponse;
+      }
+    }
+  }
 
   if (!response.ok) {
     let errText = `Status ${response.status} ${response.statusText}`;
