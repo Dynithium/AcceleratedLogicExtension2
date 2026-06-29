@@ -3,9 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import Tesseract from './tesseract.esm.min.js';
-import * as pdfjsLibStatic from './pdf.min.mjs';
-
 // Storage and State Keys
 const STORAGE_KEYS = {
   SETTINGS: 'omnichat_settings',
@@ -435,8 +432,13 @@ const doesModelSupportVision = (modelId) => {
 };
 
 // Dynamic local import of Tesseract.js (compliant with local Chrome security & Manifest V3)
+let tesseractLib = null;
 const loadTesseract = async () => {
-  return Tesseract;
+  if (!tesseractLib) {
+    const importPath = isExtensionContext() ? chrome.runtime.getURL('tesseract.esm.min.js') : './tesseract.esm.min.js';
+    tesseractLib = await import(importPath);
+  }
+  return tesseractLib;
 };
 
 // Runs OCR on an image (base64 or URL) locally using bundled Tesseract.js
@@ -490,13 +492,18 @@ const runOcrOnPdfPages = async (renderedPages) => {
 };
 
 // Dynamic local import of PDF.js
+let pdfjsLib = null;
 const loadPdfJs = async () => {
-  if (isExtensionContext()) {
-    pdfjsLibStatic.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.min.mjs');
-  } else {
-    pdfjsLibStatic.GlobalWorkerOptions.workerSrc = './pdf.worker.min.mjs';
+  if (!pdfjsLib) {
+    const importPath = isExtensionContext() ? chrome.runtime.getURL('pdf.min.mjs') : './pdf.min.mjs';
+    pdfjsLib = await import(importPath);
+    if (isExtensionContext()) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.min.mjs');
+    } else {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.mjs';
+    }
   }
-  return pdfjsLibStatic;
+  return pdfjsLib;
 };
 
 // Convert PDF pages to highly optimized PNG data URLs (first 3 pages to stay within token/payload limits)
