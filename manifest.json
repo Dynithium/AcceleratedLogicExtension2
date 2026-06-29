@@ -5,7 +5,14 @@
   "description": "A context-aware AI chat client supporting customizable OpenAI-compatible API endpoints, custom model IDs, and local message storage.",
   "permissions": [
     "storage",
+    "unlimitedStorage",
     "sidePanel"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["pdf.min.mjs", "pdf.worker.min.mjs"],
+      "matches": ["<all_urls>"]
+    }
   ],
   "background": {
     "service_worker": "background.js"

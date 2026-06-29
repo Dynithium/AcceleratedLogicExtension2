@@ -475,8 +475,8 @@ const convertSvgToPng = (svgDataUrl) => {
   });
 };
 
-// Scale down and compress any image to safe visual dimensions and a lightweight JPEG format
-const resizeAndCompressImage = (dataUrl, maxDimension = 1024, quality = 0.85) => {
+// Scale down and compress any image to safe visual dimensions and a clean PNG format
+const resizeAndCompressImage = (dataUrl, maxDimension = 1024) => {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -504,7 +504,8 @@ const resizeAndCompressImage = (dataUrl, maxDimension = 1024, quality = 0.85) =>
         ctx.fillRect(0, 0, width, height);
 
         ctx.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', quality));
+        // Force output to PNG as requested by user
+        resolve(canvas.toDataURL('image/png'));
       } catch (err) {
         console.error("Image resizing/compression failed:", err);
         resolve(dataUrl);
@@ -522,12 +523,16 @@ let pdfjsLib = null;
 const loadPdfJs = async () => {
   if (!pdfjsLib) {
     pdfjsLib = await import('./pdf.min.mjs');
-    pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.mjs';
+    if (isExtensionContext()) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.min.mjs');
+    } else {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.mjs';
+    }
   }
   return pdfjsLib;
 };
 
-// Convert PDF pages to highly compressed JPEG data URLs (first 3 pages to stay within token/payload limits)
+// Convert PDF pages to highly optimized PNG data URLs (first 3 pages to stay within token/payload limits)
 const convertPdfToPngs = async (arrayBuffer) => {
   try {
     const pdfjs = await loadPdfJs();
@@ -556,16 +561,16 @@ const convertPdfToPngs = async (arrayBuffer) => {
       };
       await page.render(renderContext).promise;
       
-      // Generate highly optimized JPEG images instead of raw PNGs to prevent huge payload uploads
-      const jpegUrl = canvas.toDataURL('image/jpeg', 0.85);
+      // Generate highly optimized PNG images as requested by user
+      const pngUrl = canvas.toDataURL('image/png');
       pageUrls.push({
-        url: jpegUrl,
+        url: pngUrl,
         pageNum: pageNum
       });
     }
     return pageUrls;
   } catch (err) {
-    console.error("Failed to render PDF pages to JPEG:", err);
+    console.error("Failed to render PDF pages to PNG:", err);
     return [];
   }
 };
@@ -638,13 +643,13 @@ const handleFileSelect = (files) => {
           }
         }
 
-        // Resize and compress ALL images to super compact JPEG format to prevent 413 Payload Too Large
-        base64Url = await resizeAndCompressImage(base64Url, 1024, 0.85);
-        fileType = 'image/jpeg';
+        // Resize and compress ALL images to super compact PNG format as requested by the user
+        base64Url = await resizeAndCompressImage(base64Url, 1024);
+        fileType = 'image/png';
         if (fileName.lastIndexOf('.') !== -1) {
-          fileName = fileName.substring(0, fileName.lastIndexOf('.')) + '.jpg';
+          fileName = fileName.substring(0, fileName.lastIndexOf('.')) + '.png';
         } else {
-          fileName += '.jpg';
+          fileName += '.png';
         }
 
         const attachmentObj = {
@@ -1269,7 +1274,7 @@ const buildPayloadMessages = (chat) => {
         if (isPdf) {
           const extractedText = typeof att === 'object' && att.extractedText ? att.extractedText : '';
           
-          // Rendered pages are JPEG images! Send them to the model so it can see the PDF visually!
+          // Rendered pages are PNG images! Send them to the model so it can see the PDF visually!
           if (typeof att === 'object' && att.renderedPages && att.renderedPages.length > 0) {
             att.renderedPages.forEach(page => {
               contentArray.push({
