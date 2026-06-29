@@ -1527,12 +1527,52 @@ const sendChatApiRequest = async (chat) => {
   let reply = '';
   let found = false;
 
+  const salvageTextFromObject = (obj) => {
+    if (!obj) return null;
+    if (typeof obj === 'string') {
+      const trimmed = obj.trim();
+      if (trimmed.startsWith('chatcmpl-') || trimmed.startsWith('gen-') || trimmed === 'assistant' || trimmed === 'user' || trimmed === 'stop' || trimmed === 'chat.completion') {
+        return null;
+      }
+      return trimmed.length > 3 ? trimmed : null;
+    }
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        const foundStr = salvageTextFromObject(item);
+        if (foundStr) return foundStr;
+      }
+    } else if (typeof obj === 'object') {
+      const priorityKeys = ['content', 'text', 'message', 'body', 'output', 'reply', 'response', 'reasoning', 'thinking', 'thought', 'reasoning_content'];
+      for (const key of priorityKeys) {
+        if (key in obj) {
+          const foundStr = salvageTextFromObject(obj[key]);
+          if (foundStr) return foundStr;
+        }
+      }
+      for (const key in obj) {
+        if (Object.prototype.hasOwnProperty.call(obj, key)) {
+          const foundStr = salvageTextFromObject(obj[key]);
+          if (foundStr) return foundStr;
+        }
+      }
+    }
+    return null;
+  };
+
   if (data) {
     const message = data.choices?.[0]?.message;
     if (message) {
       if (typeof message.content === 'string') {
         reply = message.content;
         found = true;
+      } else if (Array.isArray(message.content)) {
+        const textParts = message.content
+          .filter(part => part && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string')
+          .map(part => part.text);
+        if (textParts.length > 0) {
+          reply = textParts.join('');
+          found = true;
+        }
       }
 
       // Handle extra reasoning fields (like deepseek reasoning_content or thinking blocks)
@@ -1542,6 +1582,12 @@ const sendChatApiRequest = async (chat) => {
       } else if (message.thinking && typeof message.thinking === 'string') {
         reply = `<think>\n${message.thinking}\n</think>\n\n` + reply;
         found = true;
+      } else if (message.reasoning && typeof message.reasoning === 'string') {
+        reply = `<think>\n${message.reasoning}\n</think>\n\n` + reply;
+        found = true;
+      } else if (message.thought && typeof message.thought === 'string') {
+        reply = `<think>\n${message.thought}\n</think>\n\n` + reply;
+        found = true;
       }
     } else if (data.choices?.[0]?.text && typeof data.choices[0].text === 'string') {
       reply = data.choices[0].text;
@@ -1549,6 +1595,15 @@ const sendChatApiRequest = async (chat) => {
     } else if (data.text && typeof data.text === 'string') {
       reply = data.text;
       found = true;
+    }
+
+    // Ultimate fallback: recursively traverse the data object to salvage any text
+    if (!found) {
+      const salvaged = salvageTextFromObject(data);
+      if (salvaged) {
+        reply = salvaged;
+        found = true;
+      }
     }
   }
 
