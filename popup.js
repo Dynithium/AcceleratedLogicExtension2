@@ -518,6 +518,76 @@ const resizeAndCompressImage = (dataUrl, maxDimension = 1024) => {
   });
 };
 
+// Check if a model supports vision capabilities natively
+const doesModelSupportVision = (modelId) => {
+  const lower = (modelId || '').toLowerCase();
+  // Standard families of models that are natively multimodal/vision-enabled
+  if (lower.includes('gpt-4o') || lower.includes('gpt-4-o') || lower.includes('gpt-4o-mini') || lower.includes('gpt-4-vision')) return true;
+  if (lower.includes('gemini')) return true;
+  if (lower.includes('claude-3-5') || lower.includes('claude-3.5') || lower.includes('claude-3-opus') || lower.includes('claude-3-sonnet') || lower.includes('claude-3-haiku')) return true;
+  if (lower.includes('vision') || lower.includes('vl') || lower.includes('multimodal')) return true;
+  return false;
+};
+
+// Dynamic local import of Tesseract.js (compliant with local Chrome security & Manifest V3)
+let tesseractLib = null;
+const loadTesseract = async () => {
+  if (!tesseractLib) {
+    tesseractLib = await import('./tesseract.esm.min.js');
+  }
+  return tesseractLib;
+};
+
+// Runs OCR on an image (base64 or URL) locally using bundled Tesseract.js
+const runOcrOnImage = async (imageUrl) => {
+  try {
+    const Tesseract = await loadTesseract();
+    // Support both direct exports and default export wrappers depending on compilation/bundle state
+    const createWorker = Tesseract.createWorker || (Tesseract.default && Tesseract.default.createWorker);
+    if (!createWorker) {
+      throw new Error("createWorker is not available in the Tesseract.js bundle");
+    }
+
+    // Configure worker with fully localized asset paths to avoid remote CDN loads (Manifest V3 compliance)
+    const workerPath = isExtensionContext() ? chrome.runtime.getURL('worker.min.js') : './worker.min.js';
+    const corePath = isExtensionContext() ? chrome.runtime.getURL('tesseract-core.wasm.js') : './tesseract-core.wasm.js';
+
+    console.log("Local OCR initializing worker with paths:", { workerPath, corePath });
+    const worker = await createWorker('eng', 1, {
+      workerPath: workerPath,
+      corePath: corePath,
+      logger: m => console.log("OCR Progress:", m)
+    });
+
+    const ret = await worker.recognize(imageUrl);
+    await worker.terminate();
+    return ret.data.text || '';
+  } catch (err) {
+    console.error("Local OCR recognition failed:", err);
+    return '';
+  }
+};
+
+// Asynchronously runs OCR on rendered PDF page PNGs to extract text from scanned documents
+const runOcrOnPdfPages = async (renderedPages) => {
+  let combinedOcr = '';
+  if (!renderedPages || renderedPages.length === 0) return combinedOcr;
+
+  for (let i = 0; i < renderedPages.length; i++) {
+    const page = renderedPages[i];
+    try {
+      console.log(`Extracting text from PDF page ${page.pageNum}/${renderedPages.length} using local OCR...`);
+      const pageText = await runOcrOnImage(page.url);
+      if (pageText && pageText.trim().length > 0) {
+        combinedOcr += `\n--- PDF Page ${page.pageNum} Local OCR Text ---\n${pageText.trim()}\n`;
+      }
+    } catch (e) {
+      console.error(`Local OCR failed on PDF page ${page.pageNum}:`, e);
+    }
+  }
+  return combinedOcr.trim();
+};
+
 // Dynamic local import of PDF.js
 let pdfjsLib = null;
 const loadPdfJs = async () => {
@@ -609,7 +679,9 @@ const handleFileSelect = (files) => {
             type: 'application/pdf',
             size: file.size,
             extractedText: extractedText,
-            renderedPages: renderedPages
+            renderedPages: renderedPages,
+            ocrStatus: renderedPages.length > 0 ? 'processing' : 'done',
+            ocrText: ''
           };
 
           const exists = activeAttachments.some(att => {
@@ -621,6 +693,23 @@ const handleFileSelect = (files) => {
             activeAttachments.push(attachmentObj);
             renderAttachmentPreviews();
             updateSendButtonState();
+
+            // Run local OCR on PDF pages asynchronously to find text in scanned files
+            if (renderedPages.length > 0) {
+              runOcrOnPdfPages(renderedPages).then(combinedOcrText => {
+                attachmentObj.ocrText = combinedOcrText;
+                attachmentObj.ocrStatus = 'done';
+                if (combinedOcrText) {
+                  // Merge the OCR text with the extracted text so it gets sent in payloads
+                  attachmentObj.extractedText = (attachmentObj.extractedText ? attachmentObj.extractedText + '\n\n' : '') + combinedOcrText;
+                }
+                renderAttachmentPreviews();
+              }).catch(err => {
+                console.error("PDF local OCR error:", err);
+                attachmentObj.ocrStatus = 'failed';
+                renderAttachmentPreviews();
+              });
+            }
           }
         };
         urlReader.readAsDataURL(file);
@@ -656,7 +745,9 @@ const handleFileSelect = (files) => {
           url: base64Url,
           name: fileName,
           type: fileType,
-          size: file.size
+          size: file.size,
+          ocrStatus: 'processing',
+          ocrText: ''
         };
 
         const exists = activeAttachments.some(att => {
@@ -668,6 +759,17 @@ const handleFileSelect = (files) => {
           activeAttachments.push(attachmentObj);
           renderAttachmentPreviews();
           updateSendButtonState();
+
+          // Run local OCR on image asynchronously
+          runOcrOnImage(base64Url).then(ocrResult => {
+            attachmentObj.ocrText = ocrResult;
+            attachmentObj.ocrStatus = 'done';
+            renderAttachmentPreviews();
+          }).catch(err => {
+            console.error("Image local OCR error:", err);
+            attachmentObj.ocrStatus = 'failed';
+            renderAttachmentPreviews();
+          });
         }
       };
       reader.readAsDataURL(file);
@@ -734,6 +836,41 @@ const renderAttachmentPreviews = () => {
       img.src = url;
       img.alt = 'Attachment thumbnail';
       div.appendChild(img);
+    }
+
+    // Render loading or complete overlays/badges for local OCR progress
+    if (att.ocrStatus === 'processing') {
+      const overlay = document.createElement('div');
+      overlay.style.position = 'absolute';
+      overlay.style.inset = '0';
+      overlay.style.backgroundColor = 'rgba(9, 9, 11, 0.75)';
+      overlay.style.display = 'flex';
+      overlay.style.alignItems = 'center';
+      overlay.style.justifyContent = 'center';
+      overlay.style.color = 'var(--primary)';
+      overlay.style.fontSize = '8px';
+      overlay.style.fontWeight = 'bold';
+      overlay.style.fontFamily = 'monospace';
+      overlay.innerText = 'OCR...';
+      div.style.position = 'relative';
+      div.appendChild(overlay);
+    } else if (att.ocrStatus === 'done' && att.ocrText) {
+      const checkBadge = document.createElement('div');
+      checkBadge.style.position = 'absolute';
+      checkBadge.style.bottom = '1px';
+      checkBadge.style.right = '1px';
+      checkBadge.style.backgroundColor = 'rgba(52, 211, 153, 0.9)'; // Success color
+      checkBadge.style.borderRadius = '50%';
+      checkBadge.style.width = '10px';
+      checkBadge.style.height = '10px';
+      checkBadge.style.display = 'flex';
+      checkBadge.style.alignItems = 'center';
+      checkBadge.style.justifyContent = 'center';
+      checkBadge.style.color = '#fff';
+      checkBadge.style.fontSize = '6px';
+      checkBadge.innerHTML = '✓';
+      checkBadge.title = 'Local OCR successfully extracted text!';
+      div.appendChild(checkBadge);
     }
 
     const removeBtn = document.createElement('button');
@@ -1260,6 +1397,8 @@ const buildPayloadMessages = (chat) => {
     });
   }
 
+  const supportsVision = doesModelSupportVision(settings.modelId);
+
   // 2. Add message context history
   chat.messages.forEach(m => {
     if (m.role === 'user' && m.attachments && m.attachments.length > 0) {
@@ -1274,8 +1413,8 @@ const buildPayloadMessages = (chat) => {
         if (isPdf) {
           const extractedText = typeof att === 'object' && att.extractedText ? att.extractedText : '';
           
-          // Rendered pages are PNG images! Send them to the model so it can see the PDF visually!
-          if (typeof att === 'object' && att.renderedPages && att.renderedPages.length > 0) {
+          // Only send rendered PDF page screenshots as visual images if the model supports vision
+          if (supportsVision && typeof att === 'object' && att.renderedPages && att.renderedPages.length > 0) {
             att.renderedPages.forEach(page => {
               contentArray.push({
                 type: 'image_url',
@@ -1290,23 +1429,49 @@ const buildPayloadMessages = (chat) => {
             extraTextPrompt += `\n[Attached PDF Document: ${name}]`;
           }
         } else {
-          contentArray.push({
-            type: 'image_url',
-            image_url: { url: url }
-          });
+          // It's an image
+          const ocrText = typeof att === 'object' && att.ocrText ? att.ocrText : '';
+
+          if (supportsVision) {
+            contentArray.push({
+              type: 'image_url',
+              image_url: { url: url }
+            });
+            if (ocrText) {
+              // Add OCR text helper to maximize visual analysis accuracy
+              extraTextPrompt += `\n[Local OCR text extracted from image "${name}":]\n${ocrText}\n`;
+            }
+          } else {
+            // Text-only fallback conversion: send the image converted into local OCR text
+            extraTextPrompt += `\n\n[Image "${name}" - Converted to Text via Local OCR because AI model is text-only:]\n`;
+            if (ocrText) {
+              extraTextPrompt += ocrText;
+            } else {
+              extraTextPrompt += `(No text could be extracted or OCR is still processing)`;
+            }
+            extraTextPrompt += `\n[End of Image "${name}" content]\n`;
+          }
         }
       });
 
-      // Add the final text block with fallback markers
-      contentArray.unshift({
-        type: 'text',
-        text: (m.content || '') + extraTextPrompt
-      });
+      if (supportsVision) {
+        // Add the final text block with fallback markers
+        contentArray.unshift({
+          type: 'text',
+          text: (m.content || '') + extraTextPrompt
+        });
 
-      payload.push({
-        role: m.role,
-        content: contentArray
-      });
+        payload.push({
+          role: m.role,
+          content: contentArray
+        });
+      } else {
+        // Text-only fallback payload (no images array, purely a text block)
+        payload.push({
+          role: m.role,
+          content: (m.content || '') + extraTextPrompt
+        });
+      }
     } else {
       payload.push({
         role: m.role,
@@ -1318,7 +1483,7 @@ const buildPayloadMessages = (chat) => {
   return payload;
 };
 
-// Fallback message builder that strips base64 images but preserves full document/PDF extracted text
+// Fallback message builder that strips base64 images but preserves full document/PDF extracted text & OCRs
 const buildPayloadMessagesTextOnly = (chat) => {
   const payload = [];
 
@@ -1348,7 +1513,15 @@ const buildPayloadMessagesTextOnly = (chat) => {
             extraTextPrompt += `\n[Attached PDF Document: ${name}]`;
           }
         } else {
-          extraTextPrompt += `\n[Attached Image: ${name} (Image attached, text fallback mode)]`;
+          // Send local OCR text of the image as the ultimate text fallback
+          const ocrText = typeof att === 'object' && att.ocrText ? att.ocrText : '';
+          extraTextPrompt += `\n\n[Image "${name}" - Converted to Text via Local OCR (Text Fallback Mode):]\n`;
+          if (ocrText) {
+            extraTextPrompt += ocrText;
+          } else {
+            extraTextPrompt += `(No text could be extracted or OCR is still processing)`;
+          }
+          extraTextPrompt += `\n[End of Image "${name}" content]\n`;
         }
       });
 

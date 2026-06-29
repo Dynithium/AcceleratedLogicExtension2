@@ -10,7 +10,14 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["pdf.min.mjs", "pdf.worker.min.mjs"],
+      "resources": [
+        "pdf.min.mjs", 
+        "pdf.worker.min.mjs",
+        "tesseract.esm.min.js",
+        "worker.min.js",
+        "tesseract-core.wasm.js",
+        "tesseract-core.wasm"
+      ],
       "matches": ["<all_urls>"]
     }
   ],

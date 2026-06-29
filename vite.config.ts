@@ -4,8 +4,8 @@ import path from 'path';
 import fs from 'fs';
 import {defineConfig} from 'vite';
 
-// Copy PDF.js assets from node_modules to the root workspace directory so they are served in dev
-const setupPdfJsAssets = () => {
+// Copy PDF.js and Tesseract.js assets from node_modules to the root workspace directory so they are served in dev
+const setupLocalAssets = () => {
   const pdfJsSrc = path.resolve(__dirname, 'node_modules/pdfjs-dist/build/pdf.min.mjs');
   const pdfWorkerSrc = path.resolve(__dirname, 'node_modules/pdfjs-dist/build/pdf.worker.min.mjs');
   
@@ -18,9 +18,25 @@ const setupPdfJsAssets = () => {
   if (fs.existsSync(pdfWorkerSrc)) {
     fs.copyFileSync(pdfWorkerSrc, pdfWorkerDest);
   }
+
+  // Tesseract.js assets
+  const tessSrc = path.resolve(__dirname, 'node_modules/tesseract.js/dist/tesseract.esm.min.js');
+  const tessWorkerSrc = path.resolve(__dirname, 'node_modules/tesseract.js/dist/worker.min.js');
+  const tessCoreSrc = path.resolve(__dirname, 'node_modules/tesseract.js-core/tesseract-core.wasm.js');
+  const tessCoreWasmSrc = path.resolve(__dirname, 'node_modules/tesseract.js-core/tesseract-core.wasm');
+
+  const tessDest = path.resolve(__dirname, 'tesseract.esm.min.js');
+  const tessWorkerDest = path.resolve(__dirname, 'worker.min.js');
+  const tessCoreDest = path.resolve(__dirname, 'tesseract-core.wasm.js');
+  const tessCoreWasmDest = path.resolve(__dirname, 'tesseract-core.wasm');
+
+  if (fs.existsSync(tessSrc)) fs.copyFileSync(tessSrc, tessDest);
+  if (fs.existsSync(tessWorkerSrc)) fs.copyFileSync(tessWorkerSrc, tessWorkerDest);
+  if (fs.existsSync(tessCoreSrc)) fs.copyFileSync(tessCoreSrc, tessCoreDest);
+  if (fs.existsSync(tessCoreWasmSrc)) fs.copyFileSync(tessCoreWasmSrc, tessCoreWasmDest);
 };
 
-setupPdfJsAssets();
+setupLocalAssets();
 
 // A simple custom plugin to copy our extension files to dist/ after bundling
 const copyExtensionFiles = () => {
@@ -36,7 +52,11 @@ const copyExtensionFiles = () => {
         'icon48.png', 
         'icon128.png',
         'pdf.min.mjs',
-        'pdf.worker.min.mjs'
+        'pdf.worker.min.mjs',
+        'tesseract.esm.min.js',
+        'worker.min.js',
+        'tesseract-core.wasm.js',
+        'tesseract-core.wasm'
       ];
       const distDir = path.resolve(__dirname, 'dist');
       if (!fs.existsSync(distDir)) {
