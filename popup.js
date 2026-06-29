@@ -444,6 +444,89 @@ const extractTextFromPdf = async (arrayBuffer) => {
   }
 };
 
+// Convert SVG base64 to PNG base64 to ensure broad multimodal model compatibility
+const convertSvgToPng = (svgDataUrl) => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        const width = img.naturalWidth || img.width || 1024;
+        const height = img.naturalHeight || img.height || 1024;
+        
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        
+        // Render SVG onto a clean white background for high visual contrast
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/png'));
+      } catch (err) {
+        console.error("SVG rendering to Canvas failed:", err);
+        resolve(svgDataUrl);
+      }
+    };
+    img.onerror = () => {
+      resolve(svgDataUrl);
+    };
+    img.src = svgDataUrl;
+  });
+};
+
+// Dynamic local import of PDF.js
+let pdfjsLib = null;
+const loadPdfJs = async () => {
+  if (!pdfjsLib) {
+    pdfjsLib = await import('./pdf.min.mjs');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.mjs';
+  }
+  return pdfjsLib;
+};
+
+// Convert PDF pages to PNG data URLs (first 3 pages to stay within token limits)
+const convertPdfToPngs = async (arrayBuffer) => {
+  try {
+    const pdfjs = await loadPdfJs();
+    const loadingTask = pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) });
+    const pdf = await loadingTask.promise;
+    
+    const pngUrls = [];
+    const maxPagesToRender = Math.min(pdf.numPages, 3);
+    
+    for (let pageNum = 1; pageNum <= maxPagesToRender; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 1.5 });
+      
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d');
+      
+      // Draw solid white background
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      const renderContext = {
+        canvasContext: ctx,
+        viewport: viewport
+      };
+      await page.render(renderContext).promise;
+      
+      const pngUrl = canvas.toDataURL('image/png');
+      pngUrls.push({
+        url: pngUrl,
+        pageNum: pageNum
+      });
+    }
+    return pngUrls;
+  } catch (err) {
+    console.error("Failed to render PDF pages to PNG:", err);
+    return [];
+  }
+};
+
 // Process newly added image and PDF files (converts to Base64 data urls)
 const handleFileSelect = (files) => {
   if (!files || files.length === 0) return;
@@ -454,13 +537,14 @@ const handleFileSelect = (files) => {
     if (!isImage && !isPdf) return;
 
     if (isPdf) {
-      // For PDFs, we read the array buffer to extract text first
+      // For PDFs, we read the array buffer to extract text and render page screenshots
       const bufferReader = new FileReader();
       bufferReader.onload = async (ev) => {
         const arrayBuffer = ev.target.result;
         const extractedText = await extractTextFromPdf(arrayBuffer);
+        const renderedPages = await convertPdfToPngs(arrayBuffer);
         
-        // Then we read the data URL for UI display / fallback sending
+        // Then we read the data URL for UI display / download support
         const urlReader = new FileReader();
         urlReader.onload = (e) => {
           let base64Url = e.target.result;
@@ -476,7 +560,8 @@ const handleFileSelect = (files) => {
             name: file.name,
             type: 'application/pdf',
             size: file.size,
-            extractedText: extractedText
+            extractedText: extractedText,
+            renderedPages: renderedPages
           };
 
           const exists = activeAttachments.some(att => {
@@ -494,14 +579,26 @@ const handleFileSelect = (files) => {
       };
       bufferReader.readAsArrayBuffer(file);
     } else {
-      // Normal flow for image files
+      // Flow for image files (including SVGs)
       const reader = new FileReader();
-      reader.onload = (e) => {
-        const base64Url = e.target.result;
+      reader.onload = async (e) => {
+        let base64Url = e.target.result;
+        let fileType = file.type;
+        let fileName = file.name;
+        
+        const isSvg = file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
+        if (isSvg) {
+          base64Url = await convertSvgToPng(base64Url);
+          fileType = 'image/png';
+          if (!fileName.toLowerCase().endsWith('.png')) {
+            fileName += '.png';
+          }
+        }
+
         const attachmentObj = {
           url: base64Url,
-          name: file.name,
-          type: file.type,
+          name: fileName,
+          type: fileType,
           size: file.size
         };
 
@@ -1118,24 +1215,17 @@ const buildPayloadMessages = (chat) => {
         const isPdf = url.startsWith('data:application/pdf') || url.includes('pdf');
 
         if (isPdf) {
-          const base64Part = url.split(';base64,')[1] || '';
           const extractedText = typeof att === 'object' && att.extractedText ? att.extractedText : '';
           
-          // Anthropic / OpenRouter standard document structure
-          contentArray.push({
-            type: 'document',
-            source: {
-              type: 'base64',
-              media_type: 'application/pdf',
-              data: base64Part
-            }
-          });
-
-          // Standard file_url for endpoints that map file urls
-          contentArray.push({
-            type: 'file_url',
-            file_url: { url: url }
-          });
+          // Rendered pages are PNG images! Send them to the model so it can see the PDF visually!
+          if (typeof att === 'object' && att.renderedPages && att.renderedPages.length > 0) {
+            att.renderedPages.forEach(page => {
+              contentArray.push({
+                type: 'image_url',
+                image_url: { url: page.url }
+              });
+            });
+          }
 
           if (extractedText) {
             extraTextPrompt += `\n\n[Content of PDF Document "${name}":]\n${extractedText}\n[End of PDF Document content]\n`;
