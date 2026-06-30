@@ -8,7 +8,8 @@
     "unlimitedStorage",
     "sidePanel",
     "activeTab",
-    "scripting"
+    "scripting",
+    "<all_urls>"
   ],
   "web_accessible_resources": [
     {

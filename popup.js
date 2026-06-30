@@ -480,16 +480,34 @@ const resizeAndCompressImage = (dataUrl, maxDimension = 1024) => {
   });
 };
 
-// Check if a model supports vision capabilities natively
+// Check if a model supports vision capabilities natively (multi-layered fallback layers)
 const doesModelSupportVision = (modelId) => {
-  // If user has explicitly forced vision/multimodal mode, bypass checks and return true
+  // 1. If user has explicitly forced vision/multimodal mode, bypass checks and return true
   if (settings.forceVision) return true;
 
-  const id = (modelId || '').trim();
+  const id = (modelId || '').trim().toLowerCase();
   if (!id) return false;
 
-  // Check the dynamic live tested cache!
+  // 2. Dynamic tested cache (if explicitly verified as true)
   if (testedVisionModels[id] === true) {
+    return true;
+  }
+
+  // 3. Fallback Heuristic name-based regex / keyword checks
+  const visionKeywords = [
+    'vision', 'multimodal', 'vl', 'pixtral', 'llava', 'internvl', 'cogvlm', 
+    'minicpm', 'phi-3-vision', 'molmo', 'paligemma', 'omni', 'vlm', 
+    'fuyu', 'chameleon', 'florence', 'mplug', 'deepseek-vl',
+    'gpt-4o', 'gpt-4-turbo', 'gpt-4-vision', 'o1-', 'o3-', 'claude-3', 'gemini',
+    'nemotron', 'super-120b', 'qwen-vl', 'llama-3.2-11b-vision', 'llama-3.2-90b-vision'
+  ];
+
+  if (visionKeywords.some(keyword => id.includes(keyword))) {
+    return true;
+  }
+
+  // 4. Default standard multimodal families
+  if (id.includes('gpt-4') || id.includes('claude') || id.includes('gemini') || id.includes('nemotron')) {
     return true;
   }
 
@@ -577,10 +595,10 @@ const updateModelVisionUIState = (modelId, state) => {
   if (state === 'checking') {
     text += ' (🔄 Verifying vision support...)';
     color = 'var(--primary)';
-  } else if (state === 'vision' || testedVisionModels[modelId] === true) {
+  } else if (state === 'vision' || doesModelSupportVision(modelId)) {
     text += ' (📷 Vision Enabled)';
     color = 'var(--success)';
-  } else if (state === 'text' || testedVisionModels[modelId] === false) {
+  } else if (state === 'text' || !doesModelSupportVision(modelId)) {
     text += ' (📝 Text-Only)';
     color = 'var(--text-muted)';
   } else {
@@ -876,20 +894,48 @@ Title: ${activeTab.title || 'Untitled Tab'}`;
           pageTitle = activeTab.title || 'Untitled Tab';
         }
 
-        // 2. Capture visible screen screenshot
-        chrome.tabs.captureVisibleTab(null, { format: 'png' }, (dataUrl) => {
+        // 2. Capture visible screen screenshot using the explicit tab's windowId instead of null
+        chrome.tabs.captureVisibleTab(activeTab.windowId, { format: 'png' }, (dataUrl) => {
+          let finalDataUrl = dataUrl;
+
           if (chrome.runtime.lastError) {
-            console.error("Screenshot capture failed:", chrome.runtime.lastError);
-            showToast("Screenshot capture blocked. Make sure you are on a standard webpage.");
-            return;
+            console.warn("Screenshot capture failed/blocked:", chrome.runtime.lastError.message);
+            
+            // Create a custom placeholder mockup canvas so the user still gets the full DOM context and is not blocked!
+            const canvas = document.createElement('canvas');
+            canvas.width = 640;
+            canvas.height = 400;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#1e1e2e';
+            ctx.fillRect(0, 0, 640, 400);
+            
+            ctx.fillStyle = '#f5c2e7';
+            ctx.font = 'bold 20px system-ui, sans-serif';
+            ctx.fillText('📋 Page DOM Captured (Screenshot Restricted)', 50, 100);
+
+            ctx.fillStyle = '#cdd6f4';
+            ctx.font = '14px monospace';
+            ctx.fillText('URL: ' + (activeTab.url || 'Unknown'), 50, 160);
+            ctx.fillText('Title: ' + pageTitle, 50, 190);
+            ctx.fillText('Time: ' + new Date().toLocaleTimeString(), 50, 220);
+
+            ctx.fillStyle = '#a6adc8';
+            ctx.font = '12px system-ui, sans-serif';
+            ctx.fillText('[Full DOM source and visible text captured successfully!]', 50, 280);
+            ctx.fillText('(Screenshot disabled by browser security or extension context)', 50, 310);
+            
+            finalDataUrl = canvas.toDataURL('image/png');
+            showToast("DOM context captured successfully (Screenshot restricted by browser).", "success");
+          } else {
+            showToast("Successfully captured page view & DOM!", "success");
           }
 
           const safeTitle = pageTitle.replace(/[^a-z0-9]/gi, '_').substring(0, 30);
           const attachmentObj = {
-            url: dataUrl,
+            url: finalDataUrl,
             name: `Screenshot - ${safeTitle}.png`,
             type: 'image/png',
-            size: dataUrl.length,
+            size: finalDataUrl.length,
             extractedText: domText,
             ocrStatus: 'done',
             ocrText: ''
@@ -898,7 +944,6 @@ Title: ${activeTab.title || 'Untitled Tab'}`;
           activeAttachments.push(attachmentObj);
           renderAttachmentPreviews();
           updateSendButtonState();
-          showToast("Successfully captured page view & DOM!", "success");
         });
       });
     });
