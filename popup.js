@@ -3,9 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import * as pdfjsLibModule from './pdf.min.mjs';
-import * as tesseractModule from './tesseract.esm.min.js';
-
 // Storage and State Keys
 const STORAGE_KEYS = {
   SETTINGS: 'omnichat_settings',
@@ -566,8 +563,35 @@ const updateModelVisionUIState = (modelId, state) => {
 };
 
 // Dynamic local import of Tesseract.js (compliant with local Chrome security & Manifest V3)
+let tesseractLib = null;
 const loadTesseract = async () => {
-  return tesseractModule.createWorker ? tesseractModule : (tesseractModule.default || tesseractModule);
+  if (!tesseractLib) {
+    if (isExtensionContext()) {
+      try {
+        const importPath = chrome.runtime.getURL('tesseract.esm.min.js');
+        const rawLib = await import(importPath);
+        tesseractLib = rawLib.createWorker ? rawLib : (rawLib.default || rawLib);
+        return tesseractLib;
+      } catch (err) {
+        console.error("Failed to load local extension Tesseract, trying absolute path:", err);
+      }
+    }
+
+    try {
+      const rawLib = await import('/tesseract.esm.min.js');
+      tesseractLib = rawLib.createWorker ? rawLib : (rawLib.default || rawLib);
+    } catch (err) {
+      console.warn("Failed to load local Tesseract in web preview, falling back to CDN:", err);
+      try {
+        const rawLib = await import('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.esm.min.js');
+        tesseractLib = rawLib.createWorker ? rawLib : (rawLib.default || rawLib);
+      } catch (cdnErr) {
+        console.error("All Tesseract.js load attempts failed:", cdnErr);
+        throw cdnErr;
+      }
+    }
+  }
+  return tesseractLib;
 };
 
 // Runs OCR on an image (base64 or URL) locally using bundled Tesseract.js
@@ -634,13 +658,57 @@ const runOcrOnPdfPages = async (renderedPages) => {
 };
 
 // Dynamic local import of PDF.js with automated fallback layers (Vite, MV3, & CDN)
+let pdfjsLib = null;
 const loadPdfJs = async () => {
-  const lib = pdfjsLibModule.getDocument ? pdfjsLibModule : (pdfjsLibModule.default || pdfjsLibModule);
-  if (lib.GlobalWorkerOptions && !lib.GlobalWorkerOptions.workerSrc) {
-    const workerUrl = isExtensionContext() ? chrome.runtime.getURL('pdf.worker.min.mjs') : './pdf.worker.min.mjs';
-    lib.GlobalWorkerOptions.workerSrc = workerUrl;
+  if (!pdfjsLib) {
+    if (isExtensionContext()) {
+      try {
+        const importPath = chrome.runtime.getURL('pdf.min.mjs');
+        const rawLib = await import(importPath);
+        pdfjsLib = rawLib.getDocument ? rawLib : (rawLib.default || rawLib);
+        
+        const workerUrl = chrome.runtime.getURL('pdf.worker.min.mjs');
+        if (pdfjsLib.GlobalWorkerOptions) {
+          pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+        } else if (rawLib.GlobalWorkerOptions) {
+          rawLib.GlobalWorkerOptions.workerSrc = workerUrl;
+        }
+        return pdfjsLib;
+      } catch (err) {
+        console.error("Failed to load local extension PDF.js, trying absolute path:", err);
+      }
+    }
+
+    // Web/Preview fallback: try local absolute path first, then fall back to CDN
+    try {
+      const rawLib = await import('/pdf.min.mjs');
+      pdfjsLib = rawLib.getDocument ? rawLib : (rawLib.default || rawLib);
+      
+      const workerUrl = '/pdf.worker.min.mjs';
+      if (pdfjsLib.GlobalWorkerOptions) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+      } else if (rawLib.GlobalWorkerOptions) {
+        rawLib.GlobalWorkerOptions.workerSrc = workerUrl;
+      }
+    } catch (err) {
+      console.warn("Failed to load local PDF.js in web preview, falling back to CDN:", err);
+      try {
+        const rawLib = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs');
+        pdfjsLib = rawLib.getDocument ? rawLib : (rawLib.default || rawLib);
+        
+        const workerUrl = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
+        if (pdfjsLib.GlobalWorkerOptions) {
+          pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+        } else if (rawLib.GlobalWorkerOptions) {
+          rawLib.GlobalWorkerOptions.workerSrc = workerUrl;
+        }
+      } catch (cdnErr) {
+        console.error("All PDF.js load attempts failed:", cdnErr);
+        throw cdnErr;
+      }
+    }
   }
-  return lib;
+  return pdfjsLib;
 };
 
 // Convert PDF pages to highly optimized PNG data URLs (first 3 pages to stay within token/payload limits)
@@ -1535,13 +1603,11 @@ const buildPayloadMessages = (chat) => {
         if (isPdf) {
           const extractedText = typeof att === 'object' && att.extractedText ? att.extractedText : '';
           
-          // Only send rendered PDF page screenshots as visual images if the model supports vision
-          if (supportsVision && typeof att === 'object' && att.renderedPages && att.renderedPages.length > 0) {
-            att.renderedPages.forEach(page => {
-              contentArray.push({
-                type: 'image_url',
-                image_url: { url: page.url }
-              });
+          if (supportsVision) {
+            // Send the direct PDF Base64 Data URL inside the image_url block for native multimodal parsing
+            contentArray.push({
+              type: 'image_url',
+              image_url: { url: url }
             });
           }
 
