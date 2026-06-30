@@ -814,69 +814,40 @@ const handleFileSelect = (files) => {
     if (!isImage && !isPdf) return;
 
     if (isPdf) {
-      // For PDFs, we read the array buffer to extract text and render page screenshots
-      const bufferReader = new FileReader();
-      bufferReader.onload = async (ev) => {
-        const arrayBuffer = ev.target.result;
-        const extractedText = await extractTextFromPdf(arrayBuffer);
-        const renderedPages = await convertPdfToPngs(arrayBuffer);
-        
-        // Then we read the data URL for UI display / download support
-        const urlReader = new FileReader();
-        urlReader.onload = (e) => {
-          let base64Url = e.target.result;
-          if (!base64Url.startsWith('data:application/pdf')) {
-            const parts = base64Url.split(',');
-            if (parts.length > 1) {
-              base64Url = 'data:application/pdf;base64,' + parts[1];
-            }
+      // Direct PDF loader: convert to Base64 Data URL, skipping PDF.js and local OCR completely as requested
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        let base64Url = e.target.result;
+        if (!base64Url.startsWith('data:application/pdf')) {
+          const parts = base64Url.split(',');
+          if (parts.length > 1) {
+            base64Url = 'data:application/pdf;base64,' + parts[1];
           }
+        }
 
-          const attachmentObj = {
-            url: base64Url,
-            name: file.name,
-            type: 'application/pdf',
-            size: file.size,
-            extractedText: extractedText,
-            renderedPages: renderedPages,
-            ocrStatus: renderedPages.length > 0 ? 'processing' : 'done',
-            ocrText: ''
-          };
-
-          const exists = activeAttachments.some(att => {
-            const existingUrl = typeof att === 'string' ? att : att.url;
-            return existingUrl === base64Url;
-          });
-
-          if (!exists) {
-            activeAttachments.push(attachmentObj);
-            renderAttachmentPreviews();
-            updateSendButtonState();
-
-            // Run local OCR on PDF pages asynchronously to find text in scanned files
-            if (renderedPages.length > 0) {
-              const ocrPromise = runOcrOnPdfPages(renderedPages).then(combinedOcrText => {
-                attachmentObj.ocrText = combinedOcrText;
-                attachmentObj.ocrStatus = 'done';
-                if (combinedOcrText) {
-                  // Merge the OCR text with the extracted text so it gets sent in payloads
-                  attachmentObj.extractedText = (attachmentObj.extractedText ? attachmentObj.extractedText + '\n\n' : '') + combinedOcrText;
-                }
-                renderAttachmentPreviews();
-                return combinedOcrText;
-              }).catch(err => {
-                console.error("PDF local OCR error:", err);
-                attachmentObj.ocrStatus = 'failed';
-                renderAttachmentPreviews();
-                return '';
-              });
-              attachmentObj.ocrPromise = ocrPromise;
-            }
-          }
+        const attachmentObj = {
+          url: base64Url,
+          name: file.name,
+          type: 'application/pdf',
+          size: file.size,
+          extractedText: '',
+          renderedPages: [],
+          ocrStatus: 'done',
+          ocrText: ''
         };
-        urlReader.readAsDataURL(file);
+
+        const exists = activeAttachments.some(att => {
+          const existingUrl = typeof att === 'string' ? att : att.url;
+          return existingUrl === base64Url;
+        });
+
+        if (!exists) {
+          activeAttachments.push(attachmentObj);
+          renderAttachmentPreviews();
+          updateSendButtonState();
+        }
       };
-      bufferReader.readAsArrayBuffer(file);
+      reader.readAsDataURL(file);
     } else {
       // Flow for image files (including SVGs)
       const reader = new FileReader();
@@ -1604,11 +1575,36 @@ const buildPayloadMessages = (chat) => {
           const extractedText = typeof att === 'object' && att.extractedText ? att.extractedText : '';
           
           if (supportsVision) {
-            // Send the direct PDF Base64 Data URL inside the image_url block for native multimodal parsing
-            contentArray.push({
-              type: 'image_url',
-              image_url: { url: url }
-            });
+            const parts = url.split(',');
+            const rawBase64 = parts.length > 1 ? parts[1] : url;
+            const lowerModel = (settings.modelId || '').toLowerCase();
+            
+            if (lowerModel.includes('claude')) {
+              // Native Anthropic Claude document block format
+              contentArray.push({
+                type: 'document',
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
+                  data: rawBase64
+                }
+              });
+            } else if (lowerModel.includes('gemini') || lowerModel.includes('gpt-4o') || lowerModel.includes('o1')) {
+              // OpenAI / Gemini standard image_url container for files
+              contentArray.push({
+                type: 'image_url',
+                image_url: { url: url }
+              });
+            } else {
+              // Standard modern document block payload format
+              contentArray.push({
+                type: 'document',
+                document: {
+                  data: rawBase64,
+                  mime_type: 'application/pdf'
+                }
+              });
+            }
           }
 
           if (extractedText) {
