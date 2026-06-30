@@ -6,7 +6,9 @@
   "permissions": [
     "storage",
     "unlimitedStorage",
-    "sidePanel"
+    "sidePanel",
+    "activeTab",
+    "scripting"
   ],
   "web_accessible_resources": [
     {

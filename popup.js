@@ -103,6 +103,9 @@ const elements = {
   resetSettingsBtn: document.getElementById('reset-settings-btn'),
   attachBtn: document.getElementById('attach-btn'),
   fileInput: document.getElementById('file-input'),
+  plusMenu: document.getElementById('plus-menu'),
+  menuBtnScreenshot: document.getElementById('menu-btn-screenshot'),
+  menuBtnUpload: document.getElementById('menu-btn-upload'),
   attachmentPreviewContainer: document.getElementById('attachment-preview-container'),
   settingPdfPageLimit: document.getElementById('setting-pdf-page-limit'),
   settingForceVision: document.getElementById('setting-force-vision'),
@@ -253,8 +256,36 @@ const setupEventListeners = () => {
     }
   });
 
-  // Attachment button and input triggers
-  elements.attachBtn.addEventListener('click', () => elements.fileInput.click());
+  // Toggle the plus menu dropdown
+  elements.attachBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    elements.plusMenu.classList.toggle('hidden');
+  });
+
+  // Close the plus menu dropdown when clicking anywhere else
+  document.addEventListener('click', (e) => {
+    if (elements.plusMenu && !elements.plusMenu.contains(e.target) && e.target !== elements.attachBtn) {
+      elements.plusMenu.classList.add('hidden');
+    }
+  });
+
+  // Capture current tab screenshot & DOM content
+  elements.menuBtnScreenshot.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    elements.plusMenu.classList.add('hidden');
+    handleCapturePage();
+  });
+
+  // Upload file option trigger
+  elements.menuBtnUpload.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    elements.plusMenu.classList.add('hidden');
+    elements.fileInput.click();
+  });
+
   elements.fileInput.addEventListener('change', (e) => {
     handleFileSelect(e.target.files);
     elements.fileInput.value = ''; // Reset input to allow re-selecting same file
@@ -790,6 +821,149 @@ const showToast = (message, type = 'error') => {
       toast.remove();
     }, 250);
   }, 3000);
+};
+
+// Capture current page's screenshot and DOM structure
+const handleCapturePage = () => {
+  if (activeAttachments.length >= 10) {
+    showToast("Maximum limit of 10 attachments reached.");
+    return;
+  }
+
+  showToast("Capturing current tab...", "success");
+
+  if (isExtensionContext()) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const activeTab = tabs?.[0];
+      if (!activeTab) {
+        showToast("No active tab found to capture.");
+        return;
+      }
+
+      // 1. Try to extract DOM contents via scripting
+      chrome.scripting.executeScript({
+        target: { tabId: activeTab.id },
+        func: () => {
+          return {
+            html: document.documentElement ? document.documentElement.outerHTML.slice(0, 15000) : '',
+            text: document.body ? document.body.innerText.trim().slice(0, 8000) : '',
+            title: document.title || 'Active Tab',
+            url: window.location.href
+          };
+        }
+      }, (results) => {
+        let domText = '';
+        let pageTitle = 'Active Tab';
+
+        if (results && results[0] && results[0].result) {
+          const res = results[0].result;
+          pageTitle = res.title;
+          domText = `--- CAPTURED PAGE SOURCE ---
+URL: ${res.url}
+Title: ${res.title}
+
+--- VISIBLE TEXT CONTENT ---
+${res.text}
+
+--- RAW HTML (TRUNCATED) ---
+${res.html}`;
+        } else {
+          // Fallback if scripting is blocked on this specific tab (e.g. chrome:// urls)
+          console.warn("Scripting execution rejected:", chrome.runtime.lastError);
+          domText = `--- CAPTURED PAGE SOURCE ---
+URL: ${activeTab.url || 'Unknown'}
+Title: ${activeTab.title || 'Untitled Tab'}`;
+          pageTitle = activeTab.title || 'Untitled Tab';
+        }
+
+        // 2. Capture visible screen screenshot
+        chrome.tabs.captureVisibleTab(null, { format: 'png' }, (dataUrl) => {
+          if (chrome.runtime.lastError) {
+            console.error("Screenshot capture failed:", chrome.runtime.lastError);
+            showToast("Screenshot capture blocked. Make sure you are on a standard webpage.");
+            return;
+          }
+
+          const safeTitle = pageTitle.replace(/[^a-z0-9]/gi, '_').substring(0, 30);
+          const attachmentObj = {
+            url: dataUrl,
+            name: `Screenshot - ${safeTitle}.png`,
+            type: 'image/png',
+            size: dataUrl.length,
+            extractedText: domText,
+            ocrStatus: 'done',
+            ocrText: ''
+          };
+
+          activeAttachments.push(attachmentObj);
+          renderAttachmentPreviews();
+          updateSendButtonState();
+          showToast("Successfully captured page view & DOM!", "success");
+        });
+      });
+    });
+  } else {
+    // Elegant fallback simulation in the non-extension web preview environment
+    const localDom = `--- MOCKED PAGE SOURCE (PREVIEW RUNTIME) ---
+URL: ${window.location.href}
+Title: OmniChat AI Web Preview
+
+--- VISIBLE TEXT CONTENT ---
+${document.body ? document.body.innerText.trim().slice(0, 8000) : 'No text content'}
+
+--- RAW HTML (TRUNCATED) ---
+${document.documentElement ? document.documentElement.outerHTML.slice(0, 15000) : ''}`;
+
+    // Create a canvas-based placeholder mockup representing a webpage view
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 400;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#18181b';
+    ctx.fillRect(0, 0, 640, 400);
+
+    // Grid background representing screenshot layout
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 640; i += 40) {
+      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 400); ctx.stroke();
+    }
+    for (let j = 0; j < 400; j += 40) {
+      ctx.beginPath(); ctx.moveTo(0, j); ctx.lineTo(640, j); ctx.stroke();
+    }
+
+    ctx.fillStyle = '#f59e0b';
+    ctx.font = 'bold 22px system-ui, sans-serif';
+    ctx.fillText('📷 Tab Screenshot Capture', 50, 100);
+
+    ctx.fillStyle = '#f4f4f5';
+    ctx.font = '14px monospace';
+    ctx.fillText('URL: ' + window.location.href, 50, 160);
+    ctx.fillText('Title: OmniChat AI Web Preview', 50, 190);
+    ctx.fillText('Time: ' + new Date().toLocaleTimeString(), 50, 220);
+
+    ctx.fillStyle = '#a1a1aa';
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.fillText('[Successfully simulated screenshot + full DOM capturing!]', 50, 280);
+    ctx.fillText('Run inside a real Chrome Extension to capture real external tabs.', 50, 310);
+
+    const dataUrl = canvas.toDataURL('image/png');
+
+    const attachmentObj = {
+      url: dataUrl,
+      name: 'Screenshot - Web Preview.png',
+      type: 'image/png',
+      size: dataUrl.length,
+      extractedText: localDom,
+      ocrStatus: 'done',
+      ocrText: ''
+    };
+
+    activeAttachments.push(attachmentObj);
+    renderAttachmentPreviews();
+    updateSendButtonState();
+    showToast("Web preview: Simulated capture complete!", "success");
+  }
 };
 
 // Process newly added image and PDF files (converts to Base64 data urls with dynamic resizing)
@@ -1615,6 +1789,7 @@ const buildPayloadMessages = (chat) => {
         } else {
           // It's an image
           const ocrText = typeof att === 'object' && att.ocrText ? att.ocrText : '';
+          const extractedText = typeof att === 'object' && att.extractedText ? att.extractedText : '';
 
           if (supportsVision) {
             contentArray.push({
@@ -1625,6 +1800,9 @@ const buildPayloadMessages = (chat) => {
               // Add OCR text helper to maximize visual analysis accuracy
               extraTextPrompt += `\n[Local OCR text extracted from image "${name}":]\n${ocrText}\n`;
             }
+            if (extractedText) {
+              extraTextPrompt += `\n[Page DOM context associated with screenshot "${name}":]\n${extractedText}\n[End of DOM context]\n`;
+            }
           } else {
             // Text-only fallback conversion: send the image converted into local OCR text
             extraTextPrompt += `\n\n[Image "${name}" - Converted to Text via Local OCR because AI model is text-only:]\n`;
@@ -1632,6 +1810,9 @@ const buildPayloadMessages = (chat) => {
               extraTextPrompt += ocrText;
             } else {
               extraTextPrompt += `(No text could be extracted or OCR is still processing)`;
+            }
+            if (extractedText) {
+              extraTextPrompt += `\n\n[Page DOM context associated with screenshot "${name}":]\n${extractedText}\n[End of DOM context]\n`;
             }
             extraTextPrompt += `\n[End of Image "${name}" content]\n`;
           }
@@ -1699,11 +1880,15 @@ const buildPayloadMessagesTextOnly = (chat) => {
         } else {
           // Send local OCR text of the image as the ultimate text fallback
           const ocrText = typeof att === 'object' && att.ocrText ? att.ocrText : '';
+          const extractedText = typeof att === 'object' && att.extractedText ? att.extractedText : '';
           extraTextPrompt += `\n\n[Image "${name}" - Converted to Text via Local OCR (Text Fallback Mode):]\n`;
           if (ocrText) {
             extraTextPrompt += ocrText;
           } else {
             extraTextPrompt += `(No text could be extracted or OCR is still processing)`;
+          }
+          if (extractedText) {
+            extraTextPrompt += `\n\n[Page DOM context associated with screenshot "${name}":]\n${extractedText}\n[End of DOM context]\n`;
           }
           extraTextPrompt += `\n[End of Image "${name}" content]\n`;
         }
